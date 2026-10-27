@@ -196,7 +196,7 @@ export async function streamSheet(getStream, size, info, sheetPath, onRow, onPro
 // CSV streaming (pemisah , atau ; terdeteksi otomatis)
 export async function streamCsv(getStream, size, onRow, onProgress) {
   const dec = new TextDecoder();
-  let buf = '', delim = null, row = [], field = '', inQ = false, rowNo = 0, stop = false;
+  let buf = '', delim = null, row = [], field = '', inQ = false, rowNo = 0, stop = false, lines = 0, nl = 0;
   function feed(text, final) {
     buf += text;
     if (delim === null) {
@@ -211,12 +211,17 @@ export async function streamCsv(getStream, size, onRow, onProgress) {
     for (; i < limit; i++) {
       const ch = buf[i];
       if (inQ) {
-        if (ch === '"') { if (buf[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
-        else field += ch;
-      } else if (ch === '"') inQ = true;
+        if (ch === '"') {
+          const nx = buf[i + 1];
+          if (nx === '"') { field += '"'; i++; }
+          else if (nx === delim || nx === '\n' || nx === '\r' || nx === undefined) inQ = false;
+          else field += ch; // kutip liar di dalam teks berkutip: anggap karakter biasa
+        } else field += ch;
+      } else if (ch === '"' && field === '') inQ = true; // kutip hanya membuka di awal kolom
       else if (ch === delim) { row.push(field); field = ''; }
       else if (ch === '\n' || ch === '\r') {
         if (ch === '\r' && buf[i + 1] === '\n') i++;
+        nl++;
         row.push(field); field = '';
         if (onRow(row.map((v) => { const t = v.trim(); if (t !== '' && /^-?\d+(\.\d+)?$/.test(t) && t.length < 16) return Number(t); return t === '' ? undefined : t; }), rowNo++) === false) { stop = true; return; }
         row = [];
@@ -225,8 +230,10 @@ export async function streamCsv(getStream, size, onRow, onProgress) {
     buf = buf.slice(i);
     if (final && (field !== '' || row.length)) { row.push(field); onRow(row, rowNo++); }
   }
+  // hitung baris fisik terpisah untuk validasi (deteksi kutip tidak berpasangan)
   await pump(getStream(), (c) => {
     if (stop) return false;
-    if (c) feed(dec.decode(c, { stream: true }), false); else feed(dec.decode(), true);
+    if (c) { for (let k = 0; k < c.length; k++) if (c[k] === 10) lines++; feed(dec.decode(c, { stream: true }), false); } else feed(dec.decode(), true);
   }, onProgress, size);
+  return { lines, records: rowNo };
 }

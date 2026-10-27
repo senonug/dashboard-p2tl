@@ -6,7 +6,7 @@ export const DATASETS = {
   paska: { label: 'DPM Baca Paskabayar', table: 'pakai_paska', key: 'idpel,blth', batch: 4000, mode: 'replace-month' },
   pra: { label: 'OLAP Prabayar', table: 'pakai_pra', key: 'idpel,blth', batch: 4000, mode: 'replace-month' },
   dil: { label: 'Data Induk Langganan (DIL)', table: 'dil', key: 'idpel', batch: 2500, mode: 'upsert' },
-  ts: { label: 'Laporan TS Terbayar', table: 'ts_bayar', key: 'no_agenda', batch: 1000, mode: 'upsert' },
+  ts: { label: 'Laporan TS Terbayar', table: 'ts_bayar', key: null, batch: 1000, mode: 'replace-month' },
 };
 
 export const SENSITIVE = ['NIK_PELANGGAN', 'MSISDN_PELANGGAN', 'NIK', 'NO HP', 'NOHP', 'MSISDN', 'NO_HP', 'TELEPON', 'NO TELP'];
@@ -179,6 +179,7 @@ export function track(st, rec) {
   const d = rec.tgl || rec.tgl_register || null;
   if (d) { if (!st.minDate || d < st.minDate) st.minDate = d; if (!st.maxDate || d > st.maxDate) st.maxDate = d; }
   if (rec.blth) st.blth[rec.blth] = (st.blth[rec.blth] || 0) + 1;
+  if (st.ds === 'ts' && rec.tgl_register) { const b = Number(rec.tgl_register.slice(0, 4) + rec.tgl_register.slice(5, 7)); st.blth[b] = (st.blth[b] || 0) + 1; }
   if (st.ds === 'pemeriksaan') st.status[rec.gol] = (st.status[rec.gol] || 0) + 1;
   if (st.ds === 'dil') st.status[rec.status || '-'] = (st.status[rec.status || '-'] || 0) + 1;
   if (st.ds === 'ts') st.status[rec.golongan || '-'] = (st.status[rec.golongan || '-'] || 0) + 1;

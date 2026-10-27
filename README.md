@@ -10,6 +10,8 @@ Dashboard web untuk menganalisis hasil pemeriksaan P2TL, digabung dengan data pe
 
 ## A. Pasang database Supabase (sekali saja, ±5 menit)
 
+> Untuk project `mxrjpvppliskfcnjkvto`, langkah 1–2 dan 6 **sudah dikerjakan** (skema terpasang, admin `nugrohoseno07@gmail.com` terdaftar). Tinggal langkah 3–5.
+
 1. Buka project Supabase Anda, lalu pilih **SQL Editor** › **New query**.
 2. Salin **seluruh isi** file `supabase/schema.sql`, tempel, lalu klik **Run**. Pastikan hasilnya *Success*.
 3. **Authentication** › **Sign In / Providers** › **Email**: matikan **Allow new users to sign up**, supaya hanya akun yang diundang yang bisa masuk.
@@ -46,7 +48,7 @@ Dashboard web untuk menganalisis hasil pemeriksaan P2TL, digabung dengan data pe
 | DPM Baca Paskabayar | Bulanan | Bulan (BLTH) yang sama diganti seluruhnya |
 | OLAP Prabayar | Bulanan | Bulan yang sama diganti seluruhnya (diringkas per pelanggan) |
 | DIL | Berkala | Diperbarui per IDPEL |
-| Laporan TS Terbayar | Bulanan | Ditambahkan; `NO AGENDA` sama diperbarui |
+| Laporan TS Terbayar | Bulanan | Bulan (tanggal register) yang sama diganti seluruhnya; semua baris disimpan, termasuk No. Agenda yang berulang |
 
 Skor risiko Calon TO dihitung ulang otomatis setiap kali DPM, OLAP, atau DIL diunggah.
 

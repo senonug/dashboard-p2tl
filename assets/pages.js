@@ -31,6 +31,30 @@ function bucketDaily(daily, from, to) {
   return { mode, rows: out };
 }
 
+
+// Komposisi P1–P4 dari Laporan TS terbayar (tanggal register dalam periode)
+function golTsCard(d, ctx) {
+  const MAIN = ['P1', 'P2', 'P3', 'P4', 'K1', 'K2'];
+  const all = d.gol_ts || [];
+  const g = all.filter((r) => MAIN.includes(r.gol));
+  const other = all.filter((r) => !MAIN.includes(r.gol));
+  const ts = d.ts || {};
+  const sub = 'Sumber: Laporan TS terbayar, berdasarkan tanggal register dalam periode terpilih.';
+  if (!g.length) {
+    return card('Komposisi golongan P1–P4', sub, empty(ts.min ? `Tidak ada Laporan TS terbayar pada periode ini.<br>Data laporan TS tersedia ${rentang(ts.min, ts.max)}.` : 'Belum ada Laporan TS terbayar. Unggah di halaman Kelola Data.'));
+  }
+  const order = GOL_ORDER.filter((x) => g.find((r) => r.gol === x)).concat(g.map((r) => r.gol).filter((x) => !GOL_ORDER.includes(x)));
+  const by = Object.fromEntries(g.map((r) => [r.gol, r]));
+  const totRp = sumBy(g, 'rp'), totN = sumBy(g, 'n');
+  return card('Komposisi golongan P1–P4', sub,
+    `${legend(order.map((x) => [x, GOLC[x] || '#9AA3B2']))}
+     <div><div class="lbl" style="margin-bottom:8px">Jumlah pelanggan · ${num(totN)}</div>${stack(order.map((x) => ({ l: x, v: by[x].n, c: GOLC[x] || '#9AA3B2', tip: `${x}: ${num(by[x].n)} pelanggan` })))}</div>
+     <div><div class="lbl" style="margin-bottom:8px">Nilai Rp TS · ${rp(totRp)}</div>${stack(order.map((x) => ({ l: x, v: +by[x].rp, c: GOLC[x] || '#9AA3B2', tip: `${x}: ${rp(by[x].rp)}` })))}</div>
+     ${table([{ h: 'Golongan', k: 'gol', wrapS: 1, f: (v) => `${golChip(v)}<br><small style="color:var(--muted)">${esc(GOL_DESC[v] || '')}</small>` }, { h: 'Pelanggan', k: 'n', r: 1, f: num },
+       { h: 'kWh', k: 'kwh', r: 1, f: num }, { h: 'Rp TS', k: 'rp', r: 1, f: (v) => rp(v) }, { h: 'Total P2TL', k: 'total', r: 1, f: (v) => rp(v) }], order.map((x) => by[x]))}
+     ${other.length ? `<p class="sub">Di luar golongan pelanggaran (tidak dihitung di atas): ${other.map((o) => `${esc(o.gol || 'tanpa golongan')} ${num(o.n)} plg · ${rp(o.total)}`).join('; ')}.</p>` : ''}`);
+}
+
 // ======================= RINGKASAN =======================
 async function ringkasan(ctx) {
   const d = await ctx.rpc('f_ringkasan', ctx.params(ctx.cmp ? { p_cmp_from: ctx.cmp[0], p_cmp_to: ctx.cmp[1] } : {}));
@@ -38,13 +62,15 @@ async function ringkasan(ctx) {
   const k = d.kpi, c = d.cmp;
   const hit = ratio(k.t, k.n), chit = c ? ratio(c.t, c.n) : null;
   const cmpTxt = ctx.cmp ? `<div class="note">Dibandingkan dengan ${rentang(ctx.cmp[0], ctx.cmp[1])}.</div>` : '';
+  const ts = d.ts || {};
+  const anom = k.anomali ? `<div class="note warn"><b>${num(k.anomali)} temuan bernilai TS tidak wajar</b> (total ${num(k.kwh_anomali)} kWh · ${rp(k.rp_anomali)}) dikeluarkan dari perhitungan kWh dan Rp. Nilainya melebihi batas wajar (kWh > 20.000 jam × kVA atau Rp > Rp60.000 per VA), kemungkinan salah input atau format angka di file sumber. <a href="#/detail" id="goanom">Lihat daftarnya</a>.</div>` : '';
   const kp = grid([
     kpi('PELANGGAN DIPERIKSA', num(k.n), `${num(k.hari)} hari kerja · ${num(k.hari ? k.n / k.hari : 0)}/hari`, C.s1, c ? delta(k.n, c.n) : ''),
     kpi('TEMUAN', num(k.t), `Hit rate <b class="mono">${pct(hit)}</b>`, C.s2, c ? delta(hit, chit, 'up', 'pp') : ''),
-    kpi('POTENSI TAGIHAN SUSULAN', rp(k.rp), `${num(k.kwh)} kWh TS`, C.s3, c ? delta(k.rp, c.rp) : ''),
+    kpi('POTENSI TS (HASIL PERIKSA)', rp(k.rp), `${num(k.kwh)} kWh${k.anomali ? ` · ${num(k.anomali)} nilai tidak wajar dikecualikan` : ''}`, C.s3, c ? delta(k.rp, c.rp) : ''),
+    kpi('TS TERBAYAR (LAPORAN TS)', ts.n ? rp(ts.total) : '–', ts.n ? `${num(ts.n)} pelanggan · ${num(sumBy((d.gol_ts || []).filter((r) => /^[PK]\d$/.test(r.gol || '')), 'kwh'))} kWh (P1–P4, K1–K2)` : 'Tidak ada laporan TS pada periode ini', C.s4),
     kpi('CAKUPAN PELANGGAN AKTIF', pct(ratio(k.uniq, k.aktif), 2), `${num(k.uniq)} dari ${num(k.aktif)} pelanggan`, C.s7),
-    kpi('BONGKAR / PUTUS', `${num(k.bongkar)} / ${num(k.putus)}`, 'Tindakan di lokasi atas temuan'),
-    kpi('SUDAH MASUK AP2T', num(k.ap2t), `${pct(ratio(k.ap2t, k.t), 0)} dari temuan`, null, c ? delta(k.ap2t, c.ap2t) : ''),
+    kpi('BONGKAR / PUTUS', `${num(k.bongkar)} / ${num(k.putus)}`, `AP2T: ${num(k.ap2t)} (${pct(ratio(k.ap2t, k.t), 0)} dari temuan)`),
   ].join(''), 175);
   const b = bucketDaily(d.daily, ctx.f.from, ctx.f.to);
   const med = median(b.rows.map((r) => r.t));
@@ -54,26 +80,22 @@ async function ringkasan(ctx) {
     `<div class="two"><div><div class="lbl" style="margin-bottom:6px">Pemeriksaan</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.n, tip: `${r.k}: ${num(r.n)} pemeriksaan` })), { every: 'auto' })}</div>
      <div><div class="lbl" style="margin-bottom:6px">Temuan</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.t, c: spikes.includes(r) ? C.hl : C.s2, tip: `${r.k}: ${num(r.t)} temuan · ${rp(r.rp)}` })), { color: C.s2, every: 'auto' })}</div></div>
      ${spikes.length ? `<div class="note"><b>Lonjakan temuan:</b> ${spikes.slice(0, 4).map((s) => `${b.mode === 'bulan' ? blthLabel(+s.k.replace('-', '')) : tglPendek(s.k)} (${num(s.t)} temuan, ${rp(s.rp)})`).join('; ')}. Batang berwarna gelap = lebih dari 3× median.</div>` : ''}`);
-  const gol = Object.fromEntries(d.gol.map((g) => [g.gol, g]));
-  const order = GOL_ORDER.filter((g) => gol[g]).concat(d.gol.map((g) => g.gol).filter((g) => !GOL_ORDER.includes(g)));
-  const comp = card('Komposisi temuan', 'Jumlah kasus dan nilai Rp TS per golongan pelanggaran.',
-    `${legend(order.map((g) => [g, GOLC[g] || '#9AA3B2']))}
-     <div><div class="lbl" style="margin-bottom:8px">Jumlah kasus · ${num(k.t)}</div>${stack(order.map((g) => ({ l: g, v: gol[g].n, c: GOLC[g] || '#9AA3B2', tip: `${g}: ${num(gol[g].n)} kasus` })))}</div>
-     <div><div class="lbl" style="margin-bottom:8px">Nilai Rp TS · ${rp(k.rp)}</div>${stack(order.map((g) => ({ l: g, v: +gol[g].rp, c: GOLC[g] || '#9AA3B2', tip: `${g}: ${rp(gol[g].rp)}` })))}</div>
-     ${table([{ h: 'Golongan', k: 'gol', wrapS: 1, f: (v) => `${golChip(v)}<br><small style="color:var(--muted)">${esc(GOL_DESC[v] || '')}</small>` }, { h: 'Kasus', k: 'n', r: 1, f: num },
-       { h: 'kWh TS', k: 'kwh', r: 1, f: num }, { h: 'Rp TS', k: 'rp', r: 1, f: (v) => rp(v) }, { h: 'Rp/kasus', k: 'x', r: 1, f: (v, r) => rp(r.rp / r.n) }], order.map((g) => gol[g]))}`);
+  const comp = golTsCard(d, ctx);
   const lay = Object.fromEntries(d.layanan.map((l) => [l.k, l]));
   const ins = [];
-  if (d.gol.length) {
-    const top = d.gol[0];
-    ins.push(`<b>${esc(top.gol)}</b> · ${esc(GOL_DESC[top.gol] || '')} · menyumbang <b>${pct(ratio(top.rp, k.rp), 0)}</b> nilai TS dari ${num(top.n)} kasus.`);
-    const perCase = [...d.gol].sort((a, b2) => b2.rp / b2.n - a.rp / a.n)[0];
-    if (perCase.gol !== top.gol) ins.push(`Nilai per kasus tertinggi: <b>${esc(perCase.gol)}</b>, ${rp(perCase.rp / perCase.n)} per kasus (${num(perCase.n)} kasus).`);
+  const gts = (d.gol_ts || []).filter((g) => /^[PK]\d$/.test(g.gol || ''));
+  if (gts.length) {
+    const tot = sumBy(gts, 'rp');
+    const top = gts[0];
+    ins.push(`Menurut Laporan TS terbayar, <b>${esc(top.gol)}</b> (${esc(GOL_DESC[top.gol] || '')}) menyumbang <b>${pct(ratio(top.rp, tot), 0)}</b> nilai Rp TS dari ${num(top.n)} pelanggan.`);
+    const perCase = [...gts].sort((a, b2) => b2.rp / b2.n - a.rp / a.n)[0];
+    if (perCase.gol !== top.gol) ins.push(`Nilai per pelanggan tertinggi: <b>${esc(perCase.gol)}</b>, ${rp(perCase.rp / perCase.n)} per pelanggan.`);
   }
-  if (lay.PASKABAYAR && lay.PRABAYAR) ins.push(`Hit rate paskabayar <b>${pct(ratio(lay.PASKABAYAR.t, lay.PASKABAYAR.n))}</b>, prabayar <b>${pct(ratio(lay.PRABAYAR.t, lay.PRABAYAR.n))}</b>. Kasus P4 (non-pelanggan) tercatat sebagai paskabayar.`);
+  if (k.anomali) ins.push(`<b>${num(k.anomali)}</b> baris pemeriksaan bernilai TS tidak wajar sehingga tidak dihitung. Perbaiki di file sumber lalu unggah ulang file bulan tersebut; baris dengan ID_P2TL sama akan diperbarui.`);
   ins.push(`Cakupan <b>${pct(ratio(k.uniq, k.aktif), 2)}</b> pelanggan aktif pada periode ini. Lihat <a href="#/risiko">Profil Risiko</a> untuk menajamkan target operasi.`);
   if (c) ins.push(`Dibanding periode pembanding: pemeriksaan ${delta(k.n, c.n)}, temuan ${delta(k.t, c.t)}, nilai TS ${delta(k.rp, c.rp)}.`);
-  ctx.el.innerHTML = cmpTxt + kp + `<div class="two">${trend}${comp}</div>` + card('Catatan analis (otomatis)', null, `<ul class="ins">${ins.map((x) => `<li>${x}</li>`).join('')}</ul>`);
+  ctx.el.innerHTML = cmpTxt + anom + kp + `<div class="two">${trend}${comp}</div>` + card('Catatan analis (otomatis)', null, `<ul class="ins">${ins.map((x) => `<li>${x}</li>`).join('')}</ul>`);
+  const ga = ctx.el.querySelector('#goanom'); if (ga) ga.onclick = () => { DQ.ap2t = 'ANOMALI'; DQ.page = 0; };
 }
 
 // ======================= TEMUAN =======================
@@ -82,10 +104,11 @@ async function temuan(ctx) {
   const d = await ctx.rpc('f_ringkasan', ctx.params());
   if (!ctx.alive()) return;
   const k = d.kpi;
-  const gol = Object.fromEntries(d.gol.map((g) => [g.gol, g]));
-  const top4 = GOL_ORDER.filter((g) => gol[g]).slice(0, 4);
-  const kp = grid(top4.map((g) => kpi(`TEMUAN ${g}`, num(gol[g].n), `${rp(gol[g].rp)} · ${num(gol[g].kwh)} kWh<br><small>${esc(GOL_DESC[g])}</small>`, GOLC[g])).join(''), 200);
-  const gb = card('Nilai Rp TS per golongan', 'Diurutkan dari nilai terbesar.', hbars(d.gol.map((g) => ({ l: g.gol, v: +g.rp, c: GOLC[g.gol], tip: `${g.gol}: ${rp(g.rp)} dari ${num(g.n)} kasus` })), { fmt: (v) => rp(v), lw: 40, vw: 92 }));
+  const gts = Object.fromEntries((d.gol_ts || []).filter((g) => /^[PK]\d$/.test(g.gol || '')).map((g) => [g.gol, g]));
+  const top4 = GOL_ORDER.filter((g) => gts[g]).slice(0, 4);
+  const kp = top4.length ? grid(top4.map((g) => kpi(`${g} · LAPORAN TS`, num(gts[g].n) + ' plg', `${rp(gts[g].rp)} · ${num(gts[g].kwh)} kWh<br><small>${esc(GOL_DESC[g])}</small>`, GOLC[g])).join(''), 200) : '';
+  const gb = golTsCard(d, ctx);
+  const lap = card('Status temuan di lapangan', 'Golongan sementara menurut hasil pemeriksaan (sebelum penetapan TS).', table([{ h: 'Golongan', k: 'gol', f: golChip }, { h: 'Kasus', k: 'n', r: 1, f: num }], d.gol));
   const dy = d.daya.map((r) => ({ l: DAYA_LBL[r.o], n: exP4 ? r.n_np4 : r.n, t: exP4 ? r.t_np4 : r.t }));
   const db = card('Hit rate per kelompok daya', 'Persentase pemeriksaan yang berujung temuan.',
     `<div class="seg"><button type="button" id="p4a" class="${exP4 ? '' : 'on'}">Semua temuan</button><button type="button" id="p4b" class="${exP4 ? 'on' : ''}">Kecualikan P4</button></div>` +
@@ -99,7 +122,7 @@ async function temuan(ctx) {
     { h: 'Hit rate', k: 'x', r: 1, f: (v, r) => pct(ratio(r.t, r.n)) }, { h: 'Rp TS', k: 'rp', r: 1, f: (v) => rp(v) }], d.layanan));
   const tt = card('Per tarif (min. 10 diperiksa)', null, table([{ h: 'Tarif', k: 'k' }, { h: 'Diperiksa', k: 'n', r: 1, f: num }, { h: 'Temuan', k: 't', r: 1, f: num },
     { h: 'Hit rate', k: 'x', r: 1, f: (v, r) => pct(ratio(r.t, r.n)) }, { h: 'Rp TS', k: 'rp', r: 1, f: (v) => rp(v) }], d.tarif, { maxh: 360 }));
-  ctx.el.innerHTML = kp + `<div class="two">${gb}${db}${pb}${tb}${lt}${tt}</div>`;
+  ctx.el.innerHTML = kp + `<div class="two">${gb}${db}${pb}${tb}${lap}${lt}${tt}</div>`;
   ctx.el.querySelector('#p4a').onclick = () => { exP4 = false; temuan(ctx); };
   ctx.el.querySelector('#p4b').onclick = () => { exP4 = true; temuan(ctx); };
 }
@@ -325,7 +348,7 @@ async function pembayaran(ctx) {
   const steps = [['Temuan pada periode', fu.temuan, fu.rp_temuan], ['Masuk AP2T', fu.ap2t, null], ['Punya No. Agenda P2TL', fu.sph, null], ['Sudah tercatat bayar', fu.lunas, fu.rp_lunas]];
   const mx = Math.max(fu.temuan, 1);
   const funnel = steps.map(([l, n, r]) => `<div data-tip="${esc(`${l}: ${num(n)}${r !== null ? ' · ' + rp(r) : ''}`)}" style="display:flex;align-items:center;gap:12px"><div style="flex:0 0 ${Math.max(18, (n / mx) * 100)}%;max-width:100%;height:44px;background:${C.s1};border-radius:8px;color:#fff;display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:13px;font-weight:700;gap:10px;min-width:150px"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l}</span><span class="mono">${num(n)}</span></div><div class="mono" style="font-size:12.5px;color:var(--ink2);white-space:nowrap">${pct(ratio(n, mx), 0)}${r !== null ? ' · ' + rp(r) : ''}</div></div>`).join('');
-  const fc = card('Alur penyelesaian temuan', 'Temuan pada periode filter, lalu dicocokkan dengan Laporan TS terbayar (kapan pun dibayar) lewat No. Agenda.',
+  const fc = card('Alur penyelesaian temuan', 'Temuan pada periode filter, dicocokkan dengan Laporan TS terbayar lewat No. Agenda, atau lewat IDPEL untuk pembayaran pertama sejak tanggal pemeriksaan.',
     `<div style="display:flex;flex-direction:column;gap:8px">${funnel}</div>` + (fu.temuan && !fu.lunas ? '<div class="note">Belum ada temuan periode ini yang tercatat bayar. Pastikan Laporan TS untuk bulan-bulan setelah pemeriksaan sudah diunggah.</div>' : '') +
     (fu.p4_tanpa_agenda ? `<p class="sub">${num(fu.p4_tanpa_agenda)} temuan belum punya No. Agenda.</p>` : ''));
   const AG = { 1: '<3 bulan', 2: '3–6 bulan', 3: '6–12 bulan', 4: '>12 bulan' };
@@ -378,14 +401,14 @@ async function detail(ctx) {
   const bar = `<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
     <div class="fld" style="flex:1 1 260px"><label for="dq">CARI</label><input id="dq" value="${esc(DQ.q)}" placeholder="IDPEL, nama, no. agenda, catatan, petugas…" style="width:100%"></div>
     ${sel('dg', 'GOLONGAN', DQ.gol, [['', 'Semua'], ...GOL_ORDER.map((g) => [g, g])])}
-    ${sel('da', 'AP2T', DQ.ap2t, [['', 'Semua'], ['Ya', 'Sudah'], ['-', 'Belum']])}
+    ${sel('da', 'AP2T / KUALITAS', DQ.ap2t, [['', 'Semua'], ['Ya', 'AP2T sudah'], ['-', 'AP2T belum'], ['ANOMALI', 'Nilai TS tidak wajar']])}
     ${sel('dt', 'TINDAKAN', DQ.tindakan, [['', 'Semua'], ['Tidak Diputus', 'Tidak diputus'], ['Bongkar', 'Bongkar'], ['Diputus', 'Diputus']])}
     ${sel('db', 'STATUS BAYAR', DQ.bayar, [['', 'Semua'], ['Sudah', 'Sudah bayar'], ['Belum', 'Belum tercatat']])}
     <button class="btn" type="button" id="dx">${icon(IC.dl, 16)}Ekspor Excel</button></div>`;
   const pages = Math.max(1, Math.ceil(d.total / per));
   const cols = [{ h: 'Waktu', k: 'waktu_periksa', f: (v) => `${tglPendek(v)} <small style="color:var(--muted)">${jam(v)}</small>` }, { h: 'IDPEL', k: 'idpel', f: (v) => `<span class="mono" style="font-size:12px">${esc(v)}</span>` },
     { h: 'Nama', k: 'nama', f: (v) => esc(title(v || '-')) }, { h: 'Tarif/Daya', k: 'tarif', f: (v, r) => `${esc(v)} / ${num(r.daya)}` }, { h: 'Gol.', k: 'gol', f: golChip },
-    { h: 'Petugas', k: 'petugas', f: (v) => esc(title(v || '-')) }, { h: 'kWh TS', k: 'kwh_ts', r: 1, f: num }, { h: 'Rp TS', k: 'rupiah_ts', r: 1, f: (v) => rp(v) },
+    { h: 'Petugas', k: 'petugas', f: (v) => esc(title(v || '-')) }, { h: 'kWh TS', k: 'kwh_ts', r: 1, f: num }, { h: 'Rp TS', k: 'rupiah_ts', r: 1, f: (v, r) => (r.ts_wajar === false ? `<span class="chip crit" title="Nilai TS tidak wajar, tidak dihitung">${rp(v)} ⚠</span>` : rp(v)) },
     { h: 'Tindakan', k: 'pemutusan' }, { h: 'AP2T', k: 'ts_ap2t', f: (v) => (v === 'Ya' ? '<span class="chip good">Ya</span>' : '–') },
     { h: 'Bayar', k: 'paid', f: (v, r) => (v ? `<span class="chip good">${+r.angsur > 0 ? 'Angsur' : 'Lunas'}</span>` : '–') }];
   ctx.el.innerHTML = card(`${num(d.total)} temuan · diurutkan berdasarkan Rp TS`, 'Klik baris untuk membuka catatan petugas, data meter, riwayat pemakaian, dan status pembayaran. NIK dan nomor HP pelanggan tidak disimpan.',
@@ -421,7 +444,8 @@ async function drawer(ctx, r) {
       <div><div class="lbl">TINDAKAN</div>${esc(r.pemutusan || '-')}</div><div><div class="lbl">NO. AGENDA</div><span class="mono" style="font-size:12px">${esc(r.no_agenda || '-')}</span></div></div>
     <div><div class="lbl">CATATAN PETUGAS</div><p style="margin:6px 0 0;line-height:1.55">${esc(r.catatan || '-')}</p></div>
     <div class="kv"><div><div class="lbl">METER</div>${esc(r.merk || '-')} · tera ${esc(r.tahun || '-')}</div><div><div class="lbl">GARDU / WILAYAH</div>${esc(r.gardu || '-')} · ${esc(title(r.kelurahan || '-'))}</div>
-      <div><div class="lbl">STATUS DIL</div>${esc(r.dil_status || 'Tidak ada di DIL')}</div><div><div class="lbl">PEMBAYARAN TS</div>${r.paid ? `${rp(r.paid)} (${tglPendek(r.tgl_register)})<br>Tunai ${rp(r.tunai)} · Angsur ${rp(r.angsur)}` : 'Belum tercatat'}</div></div>
+      <div><div class="lbl">STATUS DIL</div>${esc(r.dil_status || 'Tidak ada di DIL')}</div><div><div class="lbl">PEMBAYARAN TS (LAPORAN)</div>${r.paid ? `${rp(r.paid)} (${tglPendek(r.tgl_register)})<br>${esc(r.ts_gol || '')} · ${num(r.ts_kwh)} kWh · Rp TS ${rp(r.ts_rp)}<br>Tunai ${rp(r.tunai)} · Angsur ${rp(r.angsur)}` : 'Belum tercatat'}</div></div>
+    ${r.paid && r.ts_wajar === false ? `<div class="note warn">Nilai di data pemeriksaan (${num(r.kwh_ts)} kWh · ${rp(r.rupiah_ts)}) tidak wajar. Nilai yang benar menurut Laporan TS: <b>${num(r.ts_kwh)} kWh · ${rp(r.ts_rp)}</b>.</div>` : ''}
     <div><div class="lbl" style="margin-bottom:6px">RIWAYAT PEMAKAIAN (kWh)</div><div id="uh"><span class="spin"></span></div></div>
     ${r.lat ? `<div class="leaf" id="dmap"></div><a class="btn" href="${gmaps(r.lat, r.lon)}" target="_blank" rel="noopener" style="align-self:flex-start">${icon(IC.ext, 16)}Buka di Google Maps</a>` : ''}`;
   document.body.append(bg, dr);

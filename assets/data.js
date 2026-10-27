@@ -17,7 +17,7 @@ export async function dataPage(ctx) {
     ['DPM Baca Paskabayar', 'Bulanan · per BLTH', '', months(d.paska), d.paska.length > 0],
     ['OLAP Prabayar', 'Bulanan · diringkas per pelanggan', '', months(d.pra), d.pra.length > 0],
     ['Data Induk Langganan (DIL)', 'Berkala · menimpa data lama per IDPEL', d.dil.n ? `${num(d.dil.n)} pelanggan · ${num(d.dil.aktif)} aktif` : '', d.dil.snapshot || (d.dil.n ? 'Tersedia' : 'Belum ada'), !!d.dil.n],
-    ['Laporan TS Terbayar', 'Bulanan · per No. Agenda', d.ts.n ? `${num(d.ts.n)} pelunasan` : '', range(d.ts.min, d.ts.max), !!d.ts.n],
+    ['Laporan TS Terbayar', 'Bulanan · per bulan tanggal register', d.ts.n ? `${num(d.ts.n)} pelunasan` : '', range(d.ts.min, d.ts.max), !!d.ts.n],
   ];
   const used = d.db_size || 0;
   const cards = ds.map(([t, f, n, per, ok]) => `<section class="card" style="gap:10px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div><h2>${t}</h2><p class="sub">${f}</p></div>
@@ -114,13 +114,15 @@ function renderJobs(ctx) {
       ['Duplikat di dalam file', st.dup ? `${num(st.dup)} (yang terakhir dipakai)` : '0'],
       ['Baris dilewati (kunci kosong)', num(st.skipped)],
       ['Kolom sensitif', st.sensitive?.length ? `<span class="chip warn">${esc(st.sensitive.join(', '))}</span> dibuang, tidak dikirim` : 'Tidak ada'],
-      ['Cara simpan', def.mode === 'replace-month' ? 'Data bulan yang sama di database <b>diganti</b>' : 'Ditambahkan; baris dengan kunci sama <b>diperbarui</b>'],
+      ['Cara simpan', def.mode === 'replace-month' ? `Data bulan yang sama di database <b>diganti</b> (${Object.keys(st.blth).map((b) => blthLabel(+b)).join(', ')})` : 'Ditambahkan; baris dengan kunci sama <b>diperbarui</b>'],
       ['Rincian', statusRows || '–'],
     ];
+    const lost = st.csvLines && st.csvRecords < st.csvLines * 0.98 ? st.csvLines - st.csvRecords : 0;
+    const warnHtml = lost ? `<div class="note warn"><b>Peringatan:</b> file CSV berisi ${num(st.csvLines)} baris teks, tetapi hanya ${num(st.csvRecords)} baris data yang terbaca. Kemungkinan ada tanda kutip (") yang tidak berpasangan di sumbernya. Sebaiknya gunakan file .xlsx untuk data ini.</div>` : '';
     const snap = m.ds === 'dil' ? `<div class="fld"><label for="snap-${j.id}">LABEL SNAPSHOT DIL</label><input id="snap-${j.id}" value="${esc(j.file.name.replace(/\.[^.]+$/, ''))}"></div>` : '';
     return `<div class="job" data-job="${j.id}">${head}<span class="chip info">Periksa sebelum diterapkan</span></div>
       <div class="tbox"><table class="tbl"><tbody>${rows.map(([a, b]) => `<tr><td style="color:var(--muted);width:240px">${a}</td><td class="wrap">${b}</td></tr>`).join('')}</tbody></table></div>
-      ${snap}<div style="display:flex;gap:10px;justify-content:flex-end"><button class="btn" type="button" data-dismiss>Batalkan</button><button class="btn pri" type="button" data-apply>Terapkan data</button></div></div>`;
+      ${warnHtml}${snap}<div style="display:flex;gap:10px;justify-content:flex-end"><button class="btn" type="button" data-dismiss>Batalkan</button><button class="btn pri" type="button" data-apply>Terapkan data</button></div></div>`;
   }).join('');
   box.querySelectorAll('[data-job]').forEach((el) => {
     const j = jobs.find((x) => x.id === el.dataset.job);

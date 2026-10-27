@@ -3,8 +3,10 @@
 import { inspectXlsx, streamSheet, streamCsv } from './xlsxstream.js';
 import { DATASETS, detect, makeMapper, newStats, track, REQUIRED } from './datasets.js';
 
+let rowSeq = 0;
 function keyOf(ds, r) {
   if (ds === 'paska' || ds === 'pra') return r.idpel + '|' + r.blth;
+  if (ds === 'ts') return 'r' + (rowSeq++); // setiap baris pembayaran disimpan
   return r[DATASETS[ds].key];
 }
 
@@ -16,6 +18,7 @@ export async function parseFile(src, onProgress = () => {}) {
   const recs = new Map();
   let stats = null;
   let rowsSeen = 0;
+  let csvInfo = null;
 
   const handle = (row, i) => {
     if (!header) {
@@ -46,7 +49,7 @@ export async function parseFile(src, onProgress = () => {}) {
   };
 
   if (isCsv) {
-    await streamCsv(src.stream, src.size, handle, (d, t) => onProgress('baca', d, t));
+    csvInfo = await streamCsv(src.stream, src.size, handle, (d, t) => onProgress('baca', d, t));
   } else {
     onProgress('periksa', 0, src.size);
     const info = await inspectXlsx(src.stream, src.size, (d, t) => onProgress('periksa', d, t));
@@ -75,12 +78,14 @@ export async function parseFile(src, onProgress = () => {}) {
   stats.sheet = sheetName;
   stats.sensitive = mapper.sensitive;
   stats.unique = recs.size;
+  if (csvInfo) { stats.csvLines = csvInfo.lines; stats.csvRecords = csvInfo.records; }
   const periode = describePeriod(ds, stats);
   return { ds, header, records: Array.from(recs.values()), stats, periode };
 }
 
 export function describePeriod(ds, st) {
   const bl = Object.keys(st.blth).map(Number).sort();
+  if (ds === 'ts') return st.minDate ? `${st.minDate} s/d ${st.maxDate}` : '-';
   if (ds === 'paska' || ds === 'pra') return bl.length ? bl.join(', ') : '-';
   if (ds === 'dil') return 'Snapshot';
   return st.minDate ? (st.minDate === st.maxDate ? st.minDate : `${st.minDate} s/d ${st.maxDate}`) : '-';
@@ -106,8 +111,8 @@ export async function applyRecords(parsed, cfg, onProgress = () => {}, signal) {
   const conc = 3;
   let next = 0;
   const post = async (batch, attempt = 0) => {
-    const r = await fetch(`${url}/rest/v1/${def.table}?on_conflict=${def.key}`, {
-      method: 'POST', headers: { ...H, Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(batch), signal });
+    const r = await fetch(`${url}/rest/v1/${def.table}${def.key ? `?on_conflict=${def.key}` : ''}`, {
+      method: 'POST', headers: { ...H, Prefer: def.key ? 'resolution=merge-duplicates,return=minimal' : 'return=minimal' }, body: JSON.stringify(batch), signal });
     if (!r.ok) {
       const t = await r.text();
       if (attempt < 3 && (r.status >= 500 || r.status === 429)) { await new Promise((ok) => setTimeout(ok, 1500 * (attempt + 1))); return post(batch, attempt + 1); }
