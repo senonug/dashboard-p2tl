@@ -10,7 +10,7 @@ const NAV = [
   ['ringkasan', 'Ringkasan Eksekutif', IC.sum, 'Gambaran cepat untuk SPV hingga Manager: volume, hasil, dan nilai pemeriksaan pada periode terpilih.'],
   ['temuan', 'Analisis Temuan', IC.bars, 'Jenis pelanggaran, nilai TS, dan profil pelanggan yang paling sering terkena temuan.'],
   ['kinerja', 'Kinerja Regu & Petugas', IC.team, 'Produktivitas (volume) dan efektivitas (hit rate, nilai TS) tiap regu dan petugas.'],
-  ['cakupan', 'Peta & Cakupan', IC.map, 'Di mana temuan terjadi, dan area mana yang belum disisir dibandingkan populasi pelanggan di DIL.'],
+  ['cakupan', 'Peta Kerja', IC.map, 'Satu peta untuk menyusun sasaran lapangan: area yang belum disisir, titik temuan, calon TO berisiko, dan pelanggan di sekitar satu lokasi.'],
   ['risiko', 'Profil Risiko & Calon TO', IC.risk, 'Gabungan pemakaian (DPM, OLAP prabayar), DIL, dan hasil pemeriksaan untuk menyusun Target Operasi.'],
   ['pembayaran', 'Realisasi Pembayaran TS', IC.pay, 'Seberapa banyak nilai temuan yang benar-benar tertagih: tunai, angsuran, dan sisa piutang.'],
   ['recovery', 'Recovery Pemakaian', IC.up, 'Apakah pemakaian pelanggan naik setelah ditertibkan? Ukuran dampak jangka panjang P2TL.'],

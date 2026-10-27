@@ -257,7 +257,7 @@ begin
     'periksa_max', (select max(tgl) from pemeriksaan),
     'n_periksa', (select count(*) from pemeriksaan),
     'regu', (select coalesce(json_agg(rg order by rg), '[]') from (select distinct regu rg from pemeriksaan where regu is not null) x),
-    'kecamatan', (select coalesce(json_agg(k order by n desc), '[]') from (select kecamatan k, count(*) n from dil where status = 'AKTIF' and kecamatan is not null group by 1 having count(*) > 500) x),
+    'kecamatan', (select coalesce(json_agg(k order by n desc), '[]') from (select kecamatan k, sum(n) n from dil_sel where kecamatan is not null group by 1 having sum(n) > 500) x),
     'dil_n', (select count(*) from dil),
     'dil_snapshot', (select max(snapshot) from dil),
     'paska_blth', (select coalesce(json_agg(b order by b), '[]') from (select distinct blth b from pakai_paska) x),
@@ -355,6 +355,30 @@ begin
   return r;
 end $$;
 
+-- Ringkasan DIL per sel (v1.5.1): diisi ulang oleh f_after_upload('dil')
+create table if not exists dil_sel (
+  gx integer, gy integer, inbox boolean, kecamatan text, kelurahan text, layanan text, gardu text,
+  n integer, slat double precision, slon double precision
+);
+create index if not exists dil_sel_cell_idx on dil_sel (gx, gy);
+-- tanggal pemeriksaan terakhir per pelanggan (index-only scan)
+create index if not exists pemeriksaan_idpel_tgl_idx on pemeriksaan (idpel, tgl);
+alter table dil_sel enable row level security;  -- tanpa policy: hanya dibaca lewat fungsi security definer
+
+create or replace function f_refresh_dil_sel_internal() returns integer
+language plpgsql volatile security definer set search_path = public as $$
+declare n int;
+begin
+  truncate dil_sel;
+  insert into dil_sel (gx, gy, inbox, kecamatan, kelurahan, layanan, gardu, n, slat, slon)
+  select gx, gy, coalesce(lat between -6.6 and -6.1 and lon between 106.6 and 107.0, false) inbox,
+         kecamatan, kelurahan, layanan, gardu, count(*), sum(lat), sum(lon)
+  from dil where status = 'AKTIF' group by 1, 2, 3, 4, 5, 6, 7;
+  get diagnostics n = row_count;
+  analyze dil_sel;
+  return n;
+end $$;
+
 -- ---------- 8. Cakupan & peta ----------------------------------------
 create or replace function f_cakupan(p_from date, p_to date, p_regu int default null, p_kec text default null, p_layanan text default null)
 returns json
@@ -364,34 +388,50 @@ begin
   perform guard();
   with b as (select * from f_base(p_from, p_to, p_regu, p_kec, p_layanan)),
   bi as (select idpel, bool_or(gol <> 'Sesuai') tm from b group by idpel),
-  a as (select d.*, bi.idpel is not null ins, coalesce(bi.tm, false) tm from dil d left join bi on bi.idpel = d.idpel
-        where d.status = 'AKTIF' and (p_kec is null or d.kecamatan = p_kec) and (p_layanan is null or d.layanan = p_layanan)
-          and d.lat between -6.6 and -6.1 and d.lon between 106.6 and 107.0),
-  cells as (select gx, gy, count(*) pop, count(*) filter (where ins) ins, count(*) filter (where tm) tm,
-                   count(*) filter (where layanan = 'PRABAYAR') pra, avg(lat) lat, avg(lon) lon,
-                   mode() within group (order by kelurahan) kel, mode() within group (order by kecamatan) kec
-            from a group by gx, gy having count(*) >= 30)
+  bl as (select b.id_p2tl, b.gol, b.idpel, b.nama, b.rupiah_ts, coalesce(b.lat, d.lat) lat, coalesce(b.lon, d.lon) lon
+         from b left join dil d on d.idpel = b.idpel and b.lat is null),
+  ia as materialized (select d.gx, d.gy, d.gardu, d.kecamatan, d.kelurahan, bi.tm from bi join dil d on d.idpel = bi.idpel
+         where d.status = 'AKTIF' and (p_kec is null or d.kecamatan = p_kec) and (p_layanan is null or d.layanan = p_layanan)
+           and d.lat between -6.6 and -6.1 and d.lon between 106.6 and 107.0),
+  s as materialized (select * from dil_sel where inbox and (p_kec is null or kecamatan = p_kec) and (p_layanan is null or layanan = p_layanan)),
+  cp as (select gx, gy, sum(n) pop, coalesce(sum(n) filter (where layanan = 'PRABAYAR'), 0) pra, sum(slat) / sum(n) lat, sum(slon) / sum(n) lon
+         from s group by gx, gy having sum(n) >= 30),
+  ckel as (select distinct on (gx, gy) gx, gy, kelurahan kel, kecamatan kec from (
+           select gx, gy, kelurahan, kecamatan, sum(n) n from s where kelurahan is not null group by 1, 2, 3, 4) z order by gx, gy, n desc, kelurahan),
+  cgar as (select distinct on (gx, gy) gx, gy, gardu from (
+           select gx, gy, gardu, sum(n) n from s where gardu is not null group by 1, 2, 3) z order by gx, gy, n desc, gardu),
+  cins as (select gx, gy, count(*) ins, count(*) filter (where tm) tm from ia group by 1, 2),
+  clast as (select d.gx, d.gy, max(p.tgl) last from (select idpel, max(tgl) tgl from pemeriksaan where tgl <= p_to group by idpel) p join dil d on d.idpel = p.idpel
+            where d.status = 'AKTIF' and (p_kec is null or d.kecamatan = p_kec) and (p_layanan is null or d.layanan = p_layanan) group by 1, 2),
+  cells as materialized (select cp.gx, cp.gy, cp.pop, coalesce(ci.ins, 0) ins, coalesce(ci.tm, 0) tm, cp.pra, cp.lat, cp.lon, ck.kel, ck.kec, cl.last, cg.gardu
+            from cp left join cins ci using (gx, gy) left join ckel ck using (gx, gy) left join cgar cg using (gx, gy) left join clast cl using (gx, gy))
   select json_build_object(
     'kpi', json_build_object(
-       'aktif', (select count(*) from a), 'pra', (select count(*) from a where layanan = 'PRABAYAR'),
-       'uniq', (select count(*) from bi), 'uniq_dil', (select count(*) from a where ins),
-       'gardu_total', (select count(distinct gardu) from a), 'gardu_ins', (select count(distinct gardu) from a where ins),
+       'aktif', (select coalesce(sum(n), 0) from s), 'pra', (select coalesce(sum(n), 0) from s where layanan = 'PRABAYAR'),
+       'uniq', (select count(*) from bi), 'uniq_dil', (select count(*) from ia),
+       'gardu_total', (select count(distinct gardu) from s), 'gardu_ins', (select count(distinct gardu) from ia),
        'cells', (select count(*) from cells), 'cells_zero', (select count(*) from cells where ins = 0),
        'pop_zero', (select coalesce(sum(pop), 0) from cells where ins = 0)),
-    'cells', (select coalesce(json_agg(json_build_array(gx, gy, pop, ins, tm, pra, round(lat::numeric, 6), round(lon::numeric, 6), kel, kec)), '[]') from cells),
+    'cells', (select coalesce(json_agg(json_build_array(gx, gy, pop, ins, tm, pra, round(lat::numeric, 6), round(lon::numeric, 6), kel, kec, last, gardu)), '[]') from cells),
     'kec', (select coalesce(json_agg(x order by x.pop desc), '[]') from (
-       select kecamatan k, count(*) pop, count(*) filter (where ins) ins, count(*) filter (where tm) tm from a group by 1 having count(*) > 500) x),
+       select p.k, p.pop, coalesce(i.ins, 0) ins, coalesce(i.tm, 0) tm
+       from (select kecamatan k, sum(n) pop from s group by 1 having sum(n) > 500) p
+       left join (select kecamatan k, count(*) ins, count(*) filter (where tm) tm from ia group by 1) i on i.k is not distinct from p.k) x),
     'kel', (select coalesce(json_agg(x order by x.tm desc, x.ins desc), '[]') from (
-       select kelurahan k, kecamatan kec, count(*) pop, count(*) filter (where ins) ins, count(*) filter (where tm) tm from a group by 1, 2 having count(*) > 300) x),
+       select p.k, p.kec, p.pop, coalesce(i.ins, 0) ins, coalesce(i.tm, 0) tm
+       from (select kelurahan k, kecamatan kec, sum(n) pop from s group by 1, 2 having sum(n) > 300) p
+       left join (select kelurahan k, kecamatan kec, count(*) ins, count(*) filter (where tm) tm from ia group by 1, 2) i
+         on i.k is not distinct from p.k and i.kec is not distinct from p.kec) x),
+    -- koordinat pemeriksaan; bila kosong (mis. data Agu–Sep 2026) memakai koordinat DIL pelanggan
     'points', (select coalesce(json_agg(json_build_array(round(lat::numeric, 6), round(lon::numeric, 6), gol, idpel, nama, rupiah_ts)), '[]') from (
-       select * from b where gol <> 'Sesuai' and lat is not null
+       select * from bl where gol <> 'Sesuai' and lat is not null
        union all
-       (select * from b where gol = 'Sesuai' and lat is not null order by md5(id_p2tl) limit 2500)) x)
+       (select * from bl where gol = 'Sesuai' and lat is not null order by md5(id_p2tl) limit 2500)) x)
   ) into r;
   return r;
 end $$;
 
--- Detail satu sel grid (untuk peta asli)
+-- Detail satu sel grid: + skor risiko per pelanggan (null bila tidak berisiko / sudah diperiksa 90 hari)
 create or replace function f_cell(p_gx int, p_gy int, p_from date, p_to date) returns json
 language plpgsql stable security definer set search_path = public as $$
 declare r json;
@@ -399,14 +439,19 @@ begin
   perform guard();
   with ins as (select idpel, max(tgl) tgl, string_agg(distinct gol, ',') gol from pemeriksaan where tgl between p_from and p_to group by idpel),
   last3 as (select idpel, max(tgl) tgl from pemeriksaan where tgl >= p_to - 365 group by idpel),
-  a as (select d.idpel, d.nama, d.tarif, d.daya, d.layanan, d.gardu, d.kelurahan, d.kecamatan, d.merk, d.tahun_tera, d.lat, d.lon,
-               ins.gol, l.tgl last_periksa
-        from dil d left join ins on ins.idpel = d.idpel left join last3 l on l.idpel = d.idpel
+  gtem as (select distinct d.gardu from pemeriksaan p join dil d on d.idpel = p.idpel where p.gol <> 'Sesuai' and p.tgl > p_to - 180 and d.gardu is not null),
+  a as (select d.idpel, d.nama, d.tarif, d.daya, d.layanan, d.gardu, d.kelurahan, d.kecamatan, d.merk, d.tahun_tera, d.lat, d.lon, d.alamat,
+               ins.gol, l.tgl last_periksa,
+               case when s.idpel is null or exists (select 1 from pemeriksaan h where h.idpel = d.idpel and h.tgl > greatest(p_to, current_date) - 90) then null
+                    else s.skor0 + case when exists (select 1 from gtem g where g.gardu = d.gardu) then 5 else 0 end end skor
+        from dil d left join ins on ins.idpel = d.idpel left join last3 l on l.idpel = d.idpel left join skor_dasar s on s.idpel = d.idpel
         where d.gx = p_gx and d.gy = p_gy and d.status = 'AKTIF')
   select json_build_object(
     'gardu', (select coalesce(json_agg(x order by x.n desc), '[]') from (select gardu k, count(*) n from a group by 1 order by 2 desc limit 5) x),
     'tarif', (select coalesce(json_agg(x order by x.n desc), '[]') from (select tarif k, count(*) n from a group by 1 order by 2 desc limit 5) x),
-    'pts', (select coalesce(json_agg(json_build_array(idpel, nama, tarif, daya, layanan, gardu, round(lat::numeric, 6), round(lon::numeric, 6), gol, last_periksa)), '[]') from a)
+    'risk', (select json_build_object('t', count(*) filter (where skor >= 60), 's', count(*) filter (where skor >= 35 and skor < 60)) from a),
+    'blth', (select max(blth) from skor_dasar),
+    'pts', (select coalesce(json_agg(json_build_array(idpel, nama, tarif, daya, layanan, gardu, round(lat::numeric, 6), round(lon::numeric, 6), gol, last_periksa, skor, alamat)), '[]') from a)
   ) into r;
   return r;
 end $$;
@@ -529,6 +574,34 @@ begin
         select idpel, nama, tarif, daya, layanan, gardu, kelurahan, kecamatan, merk, tahun_tera, jn, kwh, kd, beli, prev_k, skor, kat,
                round(lat::numeric, 6) lat, round(lon::numeric, 6) lon
         from uc where (p_kategori is null or kat = p_kategori) order by skor desc, daya desc, idpel limit p_limit) x)
+  ) into r;
+  return r;
+end $$;
+
+-- Peta Kerja (v1.5): calon TO berisiko per sel + titiknya
+create or replace function f_peta_risiko(p_from date, p_to date, p_regu int default null, p_kec text default null, p_layanan text default null)
+returns json
+language plpgsql stable security definer set search_path = public as $$
+declare r json; v_blth int;
+begin
+  perform guard();
+  v_blth := (select max(blth) from skor_dasar);
+  if v_blth is null then return json_build_object('blth', null, 'cells', '[]'::json, 'pts', '[]'::json); end if;
+  with hist as (select distinct idpel from pemeriksaan where tgl > greatest(p_to, current_date) - 90 and idpel is not null),
+  gtem as (select distinct d.gardu from pemeriksaan p join dil d on d.idpel = p.idpel where p.gol <> 'Sesuai' and p.tgl > p_to - 180 and d.gardu is not null),
+  uc as (select d.idpel, d.nama, d.alamat, d.tarif, d.daya, d.layanan, d.gardu, d.lat, d.lon, d.gx, d.gy,
+                s.skor0 + case when g.gardu is not null then 5 else 0 end skor
+         from skor_dasar s join dil d on d.idpel = s.idpel left join gtem g on g.gardu = d.gardu
+         where s.skor0 >= 30 and d.lat is not null
+           and (p_kec is null or d.kecamatan = p_kec) and (p_layanan is null or d.layanan = p_layanan)
+           and not exists (select 1 from hist h where h.idpel = s.idpel)),
+  rk as (select *, case when skor >= 60 then 'Tinggi' else 'Sedang' end kat from uc where skor >= 35)
+  select json_build_object(
+    'blth', v_blth,
+    'cells', (select coalesce(json_agg(json_build_array(gx, gy, t, s)), '[]') from (
+        select gx, gy, count(*) filter (where kat = 'Tinggi') t, count(*) filter (where kat = 'Sedang') s from rk group by 1, 2) x),
+    'pts', (select coalesce(json_agg(json_build_array(round(lat::numeric, 6), round(lon::numeric, 6), idpel, nama, skor, kat, tarif, daya, layanan, gardu, alamat)), '[]') from (
+        select * from rk order by skor desc, daya desc limit 3000) x)
   ) into r;
   return r;
 end $$;
@@ -696,7 +769,7 @@ begin
   elsif p_dataset = 'paska' then delete from pakai_paska where blth = p_blth; get diagnostics n = row_count;
   elsif p_dataset = 'pra' then delete from pakai_pra where blth = p_blth; get diagnostics n = row_count;
   elsif p_dataset = 'ts' then delete from ts_bayar where blth_of(tgl_register) = p_blth; get diagnostics n = row_count;
-  elsif p_dataset = 'dil' then delete from dil where true; get diagnostics n = row_count; delete from skor_dasar where true;
+  elsif p_dataset = 'dil' then delete from dil where true; get diagnostics n = row_count; delete from skor_dasar where true; delete from dil_sel where true;
   else raise exception 'dataset tidak dikenal'; end if;
   insert into upload_log (dataset, filename, periode, n_rows, info, uploaded_by)
   values (p_dataset, '(dihapus)', coalesce(p_blth::text, 'semua'), -n, '{"hapus": true}', me_email());
@@ -769,7 +842,7 @@ language plpgsql volatile security definer set search_path = public as $$
 begin
   if not can_upload() then raise exception 'Akses ditolak: hanya pengunggah'; end if;
   if p_dataset = 'pemeriksaan' then analyze pemeriksaan;
-  elsif p_dataset = 'dil' then analyze dil;
+  elsif p_dataset = 'dil' then analyze dil; perform f_refresh_dil_sel_internal();
   elsif p_dataset = 'paska' then analyze pakai_paska;
   elsif p_dataset = 'pra' then analyze pakai_pra;
   elsif p_dataset = 'ts' then analyze ts_bayar; end if;
@@ -780,7 +853,7 @@ do $$
 declare f record;
 begin
   for f in select p.oid::regprocedure sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-           where n.nspname = 'public' and p.proname in ('f_meta','f_ringkasan','f_kinerja','f_cakupan','f_cell','f_risiko','f_pembayaran',
+           where n.nspname = 'public' and p.proname in ('f_meta','f_ringkasan','f_kinerja','f_cakupan','f_cell','f_peta_risiko','f_risiko','f_pembayaran',
              'f_recovery','f_detail','f_usage_hist','f_datasets','f_clear_month','f_after_upload','f_log_delete','f_hapus_data','f_cari','f_sekitar','f_hitung_skor','my_role','is_member','can_upload','is_admin')
   loop
     execute format('revoke all on function %s from public, anon', f.sig);
@@ -794,6 +867,8 @@ revoke execute on function f_base(date, date, int, text, text) from public, anon
 revoke execute on function guard() from public, anon, authenticated;
 revoke execute on function f_refresh_skor() from public, anon, authenticated;
 revoke execute on function f_refresh_skor_internal() from public, anon, authenticated;
+revoke execute on function f_refresh_dil_sel_internal() from public, anon, authenticated;
+select f_refresh_dil_sel_internal();
 
 -- Pengamanan akhir: tidak ada akses tanpa login ke tabel mana pun
 revoke all on all tables in schema public from anon;
