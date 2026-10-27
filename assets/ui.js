@@ -92,6 +92,21 @@ export function vbars(vals, { h = 140, color = C.s1, fmt = num, every = 1 } = {}
   return `<div class="vbars"><div class="max">${fmt(mx)}</div><div class="gl" style="top:18px"></div><div class="gl" style="top:${18 + h / 2}px"></div><div class="base" style="top:${18 + h}px"></div>
   <div class="cols">${vals.map((x, i) => `<div class="col" data-tip="${esc(x.tip ?? `${x.l}: ${fmt(x.v)}`)}" style="height:${h + 18}px"><i style="height:${Math.max(((x.v || 0) / mx) * h, x.v ? 1.5 : 0).toFixed(1)}px;background:${x.c || color}"></i><span>${i % step === 0 ? esc(x.l) : ''}</span></div>`).join('')}</div></div>`;
 }
+// Batang bertumpuk vertikal: cols = [{l, parts: {key: nilai}, tip}], keys berurutan dari bawah
+export function vstack(cols, keys, colors, { h = 160, fmt = num, every = 1, legendNames = {} } = {}) {
+  if (!cols.length) return empty('Tidak ada data pada periode ini');
+  const tot = (c) => keys.reduce((a, k) => a + (+c.parts[k] || 0), 0);
+  const mx = Math.max(...cols.map(tot)) || 1;
+  const step = Math.max(1, every === 'auto' ? Math.ceil(cols.length / 16) : every);
+  return `<div class="vbars"><div class="max">${fmt(mx)}</div><div class="gl" style="top:18px"></div><div class="gl" style="top:${18 + h / 2}px"></div><div class="base" style="top:${18 + h}px"></div>
+  <div class="cols">${cols.map((c, i) => {
+    const t = tot(c);
+    const tip = `${c.tip || c.l}: ${fmt(t)}\n` + keys.filter((k) => +c.parts[k]).map((k) => `${legendNames[k] || k}: ${fmt(c.parts[k])}`).join('\n');
+    const segs = keys.filter((k) => +c.parts[k] > 0).map((k, j, arr) => `<i style="height:${Math.max(((+c.parts[k]) / mx) * h, 1).toFixed(1)}px;background:${colors[k]};border-radius:${j === arr.length - 1 ? '4px 4px 0 0' : '0'};margin-top:${j === arr.length - 1 ? 0 : 1}px"></i>`).reverse().join('');
+    return `<div class="col" data-tip="${esc(tip)}" style="height:${h + 18}px"><div style="display:flex;flex-direction:column;justify-content:flex-end;align-items:center;width:100%;flex:1">${segs}</div><span>${i % step === 0 ? esc(c.l) : ''}</span></div>`;
+  }).join('')}</div></div>`;
+}
+
 export function stack(parts, h = 28) {
   const tot = parts.reduce((a, p) => a + (p.v || 0), 0);
   if (!tot) return empty('Tidak ada data');

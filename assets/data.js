@@ -25,32 +25,52 @@ export async function dataPage(ctx) {
     <div style="font-size:12.5px;line-height:1.65"><span class="lbl">Periode</span><br>${per}${n ? `<br><span style="color:var(--muted)">${n}</span>` : ''}</div></section>`).join('');
   const meter = `<div class="card" style="gap:8px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><h2>Kapasitas database (paket gratis 500 MB)</h2><span class="mono">${fmtSize(used)} · ${pct((used / DB_LIMIT) * 100, 0)}</span></div>
     <div class="meter"><i style="width:${Math.min(100, (used / DB_LIMIT) * 100)}%;background:${used / DB_LIMIT > 0.85 ? '#d03b3b' : used / DB_LIMIT > 0.65 ? '#eda100' : '#1baf7a'}"></i></div>
-    <p class="sub">Setiap bulan data pemakaian (DPM + OLAP) dan pemeriksaan menambah sekitar 35–40 MB. Bila mendekati penuh, hapus bulan pemakaian lama (admin) atau naikkan paket Supabase.</p>
-    ${isAdmin && (d.paska.length || d.pra.length) ? `<form id="delm" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:4px">
-      <div class="fld"><label for="dmd">HAPUS DATA PEMAKAIAN</label><select id="dmd"><option value="paska">DPM paskabayar</option><option value="pra">OLAP prabayar</option></select></div>
-      <div class="fld"><label for="dmb">BULAN</label><select id="dmb">${[...new Set([...d.paska, ...d.pra].map((x) => x.blth))].sort().map((b) => `<option value="${b}">${blthLabel(b)}</option>`).join('')}</select></div>
-      <button class="btn" type="submit">Hapus bulan ini</button><span class="sub" id="dmm" style="margin:0"></span></form>` : ''}</div>`;
-  const up = canUp ? card('Unggah file baru', 'Tarik satu atau beberapa file sekaligus. Jenis data dikenali otomatis dari judul kolom. Format: .xlsx atau .csv. File dibaca di browser Anda; yang dikirim hanya kolom yang dipakai dashboard (NIK dan nomor HP dibuang).',
+    <p class="sub">Setiap bulan data pemakaian (DPM + OLAP) dan pemeriksaan menambah sekitar 35–40 MB. Bila mendekati penuh, hapus bulan pemakaian lama lewat menu Hapus data (admin) atau naikkan paket Supabase.</p>
+    </div>`;
+  const up = canUp ? card('Unggah file baru', 'Tarik satu atau beberapa file sekaligus. Jenis data dikenali otomatis dari judul kolom. Format: .xlsx atau .csv. File dibaca di browser Anda, lalu hanya kolom yang dipakai dashboard yang dikirim dalam format CSV ringkas (sekitar setengah ukuran JSON). File aslinya tidak disimpan. NIK dan nomor HP dibuang.',
     `<label class="drop" id="drop" for="fi">${icon(IC.upload, 26, '#1c5cab')}<div style="margin-top:8px;font-weight:700">Tarik file ke sini atau klik untuk memilih</div><div class="sub" style="margin-top:4px">Pemeriksaan P2TL · DPM paskabayar · OLAP prabayar · DIL · Laporan TS terbayar</div></label>
      <input type="file" id="fi" multiple accept=".xlsx,.xlsm,.csv,.txt" class="hidden"><div id="jobs" style="display:flex;flex-direction:column;gap:12px"></div>`)
     : '<div class="note">Akun Anda berperan <b>viewer</b>: dapat melihat dashboard tetapi tidak dapat mengunggah. Hubungi admin untuk akses pengunggah.</div>';
+  const mo = d.months || {};
+  const opt = {
+    pemeriksaan: (mo.pemeriksaan || []).map((x) => [x.blth, x.n]),
+    paska: d.paska.map((x) => [x.blth, x.n]),
+    pra: d.pra.map((x) => [x.blth, x.n]),
+    ts: (mo.ts || []).map((x) => [x.blth, x.n]),
+    dil: d.dil.n ? [['semua', d.dil.n]] : [],
+  };
+  const DSL = { pemeriksaan: 'Data Pemeriksaan P2TL', paska: 'DPM Baca Paskabayar', pra: 'OLAP Prabayar', ts: 'Laporan TS Terbayar', dil: 'Data Induk Langganan (seluruhnya)' };
+  const del = isAdmin ? card('Hapus data (khusus admin)', 'Hapus satu bulan data yang salah sebelum mengunggah ulang, atau kosongkan DIL sebelum mengganti snapshot. Tindakan ini tercatat di riwayat dan tidak bisa dibatalkan.',
+    `<form id="delf" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+      <div class="fld"><label for="dds">DATASET</label><select id="dds">${Object.entries(DSL).map(([k, t]) => `<option value="${k}" ${opt[k].length ? '' : 'disabled'}>${t}${opt[k].length ? '' : ' (kosong)'}</option>`).join('')}</select></div>
+      <div class="fld"><label for="ddb">PERIODE</label><select id="ddb"></select></div>
+      <button class="btn" type="submit" style="border-color:#d03b3b;color:#b42318">Hapus data</button><span class="sub" id="ddm" style="margin:0"></span></form>`) : '';
   const log = card('Riwayat unggahan', 'Semua pengguna melihat riwayat yang sama.', table([{ h: 'Waktu', k: 'created_at', f: (v) => `${tglPendek(v)} <small style="color:var(--muted)">${new Date(v).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</small>` },
     { h: 'Dataset', k: 'dataset', f: (v) => esc(DATASETS[v]?.label || v) }, { h: 'File', k: 'filename', f: (v) => `<span style="font-size:12px">${esc(v)}</span>` }, { h: 'Periode', k: 'periode', f: (v) => esc(String(v || '').replace(/\d{4}-\d{2}-\d{2}/g, (x) => tglPendek(x)).replace(/\b(20\d{2})(0[1-9]|1[0-2])\b/g, (x) => blthLabel(+x))) },
     { h: 'Baris', k: 'n_rows', r: 1, f: num }, { h: 'Oleh', k: 'uploaded_by', f: (v) => esc(v) }], d.log, { maxh: 380 }));
-  ctx.el.innerHTML = `<div class="grid" style="--min:250px">${cards}</div>${meter}${up}${log}<div id="users"></div>`;
+  ctx.el.innerHTML = `<div class="grid" style="--min:250px">${cards}</div>${meter}${up}${del}${log}<div id="users"></div>`;
+  const df = ctx.el.querySelector('#delf');
+  if (df) {
+    const dsSel = df.querySelector('#dds'), bSel = df.querySelector('#ddb');
+    const fill = () => { const o = opt[dsSel.value] || []; bSel.innerHTML = o.map(([b, n]) => `<option value="${b}">${b === 'semua' ? 'Semua' : blthLabel(+b)} · ${num(n)} baris</option>`).join(''); };
+    const first = Object.keys(DSL).find((k) => opt[k].length); if (first) dsSel.value = first;
+    fill(); dsSel.onchange = fill;
+    df.onsubmit = async (e) => {
+      e.preventDefault();
+      const dsv = dsSel.value, b = bSel.value;
+      if (!b) return;
+      const label = `${DSL[dsv]} ${b === 'semua' ? '' : 'bulan ' + blthLabel(+b)}`;
+      if (!window.confirm(`Hapus ${label}?\nTindakan ini tidak bisa dibatalkan.`)) return;
+      const m = df.querySelector('#ddm'); m.textContent = 'Menghapus…';
+      try {
+        const n = await ctx.rpc('f_hapus_data', { p_dataset: dsv, p_blth: b === 'semua' ? null : Number(b) }, { cache: false });
+        m.textContent = `${num(n)} baris dihapus.`;
+        await ctx.refresh(); dataPage(ctx);
+      } catch (er) { m.textContent = er.message; }
+    };
+  }
   if (canUp) bindUpload(ctx);
-  const dm = ctx.el.querySelector('#delm');
-  if (dm) dm.onsubmit = async (e) => {
-    e.preventDefault();
-    const dsv = dm.querySelector('#dmd').value, b = Number(dm.querySelector('#dmb').value);
-    if (!window.confirm(`Hapus semua data ${dsv === 'pra' ? 'OLAP prabayar' : 'DPM paskabayar'} bulan ${blthLabel(b)}? Tindakan ini tidak bisa dibatalkan.`)) return;
-    try {
-      const n = await ctx.rpc('f_clear_month', { p_dataset: dsv, p_blth: b }, { cache: false });
-      await ctx.rpc('f_after_upload', { p_dataset: dsv }, { cache: false });
-      await ctx.rpc('f_log_delete', { p_dataset: dsv, p_blth: b, p_n: n }, { cache: false }).catch(() => {});
-      await ctx.refresh(); dataPage(ctx);
-    } catch (er) { dm.querySelector('#dmm').textContent = er.message; }
-  };
+
   renderJobs(ctx);
   if (isAdmin) users(ctx);
 }
@@ -73,7 +93,7 @@ function startJob(ctx, file) {
     const m = e.data;
     if (m.type === 'progress') { job.phase = m.phase; job.done = m.done; job.total = m.total; updateJob(job); return; }
     if (m.type === 'parsed') { job.state = 'review'; job.info = m; }
-    if (m.type === 'applied') { job.state = 'done'; job.sent = m.sent; job.w.terminate(); ctx.refresh().then(() => { if (document.getElementById('jobs')) return dataPage(ctx); }).catch((er) => console.warn(er)); }
+    if (m.type === 'applied') { job.state = 'done'; job.sent = m.sent; job.bytes = m.bytes; job.w.terminate(); ctx.refresh().then(() => { if (document.getElementById('jobs')) return dataPage(ctx); }).catch((er) => console.warn(er)); }
     if (m.type === 'error') { job.state = 'error'; job.err = m.message; job.w.terminate(); }
     renderJobs(ctx);
   };
@@ -101,7 +121,7 @@ function renderJobs(ctx) {
         ${j.state === 'sending' ? '<div><button class="btn sm" type="button" data-cancel>Batalkan pengiriman</button></div>' : ''}</div>`;
     }
     if (j.state === 'error') return `<div class="job" data-job="${j.id}">${head}<span class="chip crit">Gagal</span></div><div class="err">${esc(j.err)}</div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
-    if (j.state === 'done') return `<div class="job" data-job="${j.id}">${head}<span class="chip good">${icon(IC.check, 13)}Tersimpan</span></div><div class="sub" style="margin:0">${num(j.sent)} baris ${esc(DATASETS[j.info.ds].label)} tersimpan. Semua halaman dashboard sudah memakai data terbaru.</div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
+    if (j.state === 'done') return `<div class="job" data-job="${j.id}">${head}<span class="chip good">${icon(IC.check, 13)}Tersimpan</span></div><div class="sub" style="margin:0">${num(j.sent)} baris ${esc(DATASETS[j.info.ds].label)} tersimpan${j.bytes ? ` (data terkirim ${fmtSize(j.bytes)})` : ''}. Semua halaman dashboard sudah memakai data terbaru.</div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
     if (j.state === 'cancelled') return `<div class="job" data-job="${j.id}">${head}<span class="chip">Dibatalkan</span></div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
     // review
     const m = j.info, st = m.stats, def = DATASETS[m.ds];

@@ -1,4 +1,4 @@
-import { C, GOLC, GOL_ORDER, GOL_DESC, RAMP, esc, num, pct, rp, ratio, kpi, delta, card, grid, legend, empty, hbars, vbars, stack, table,
+import { C, GOLC, GOL_ORDER, GOL_DESC, RAMP, esc, num, pct, rp, ratio, kpi, delta, card, grid, legend, empty, hbars, vbars, vstack, stack, table,
   golChip, lineChart, icon, IC, tglPendek, rentang, blthLabel, title, exportXlsx, jam } from './ui.js';
 
 const DAYA_LBL = { 1: '≤450 VA', 2: '900 VA', 3: '1.300 VA', 4: '2.200 VA', 5: '3.500–5.500 VA', 6: '>5.500 VA' };
@@ -15,9 +15,15 @@ function osm(el, opts = {}) {
 const gmaps = (lat, lon) => `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`;
 
 // pengelompokan tren: harian (≤62 hari), mingguan (≤200), bulanan
+function trendMode(from, to) { const days = Math.round((new Date(to) - new Date(from)) / 864e5) + 1; return days <= 62 ? 'hari' : 'bulan'; }
+function bucketKey(tgl, mode) {
+  if (mode === 'minggu') { const dt = new Date(tgl); const dow = (dt.getDay() + 6) % 7; dt.setDate(dt.getDate() - dow); return dt.toISOString().slice(0, 10); }
+  if (mode === 'bulan') return tgl.slice(0, 7);
+  return tgl;
+}
+function bucketLabel(k, mode) { return mode === 'hari' ? String(+k.slice(8, 10)) : mode === 'minggu' ? tglPendek(k).replace(/ \d{4}$/, '') : blthLabel(+k.replace('-', '')); }
 function bucketDaily(daily, from, to) {
-  const days = Math.round((new Date(to) - new Date(from)) / 864e5) + 1;
-  const mode = days <= 62 ? 'hari' : days <= 200 ? 'minggu' : 'bulan';
+  const mode = trendMode(from, to);
   const map = new Map();
   for (const d of daily) {
     let k = d.tgl, lab;
@@ -52,10 +58,11 @@ function golTsCard(d, ctx) {
      <div><div class="lbl" style="margin-bottom:8px">Nilai Rp TS · ${rp(totRp)}</div>${stack(order.map((x) => ({ l: x, v: +by[x].rp, c: GOLC[x] || '#9AA3B2', tip: `${x}: ${rp(by[x].rp)}` })))}</div>
      ${table([{ h: 'Golongan', k: 'gol', wrapS: 1, f: (v) => `${golChip(v)}<br><small style="color:var(--muted)">${esc(GOL_DESC[v] || '')}</small>` }, { h: 'Pelanggan', k: 'n', r: 1, f: num },
        { h: 'kWh', k: 'kwh', r: 1, f: num }, { h: 'Rp TS', k: 'rp', r: 1, f: (v) => rp(v) }, { h: 'Total P2TL', k: 'total', r: 1, f: (v) => rp(v) }], order.map((x) => by[x]))}
-     ${other.length ? `<p class="sub">Di luar golongan pelanggaran (tidak dihitung di atas): ${other.map((o) => `${esc(o.gol || 'tanpa golongan')} ${num(o.n)} plg · ${rp(o.total)}`).join('; ')}.</p>` : ''}`);
+     <p class="sub">Golongan "KWH" (koreksi kWh) digabung ke K2. DKRP dan UPDATEANGSURAN tidak ditampilkan.</p>`);
 }
 
 // ======================= RINGKASAN =======================
+let trendView = 'kwh';
 async function ringkasan(ctx) {
   const d = await ctx.rpc('f_ringkasan', ctx.params(ctx.cmp ? { p_cmp_from: ctx.cmp[0], p_cmp_to: ctx.cmp[1] } : {}));
   if (!ctx.alive()) return;
@@ -76,10 +83,34 @@ async function ringkasan(ctx) {
   const med = median(b.rows.map((r) => r.t));
   const spikes = b.rows.filter((r) => r.t >= 10 && r.t > 3 * Math.max(med, 1));
   const unit = { hari: 'per hari', minggu: 'per minggu', bulan: 'per bulan' }[b.mode];
-  const trend = card('Tren ' + unit, `Jumlah pemeriksaan dan temuan ${unit}. Dua grafik terpisah karena skalanya berbeda.`,
-    `<div class="two"><div><div class="lbl" style="margin-bottom:6px">Pemeriksaan</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.n, tip: `${r.k}: ${num(r.n)} pemeriksaan` })), { every: 'auto' })}</div>
-     <div><div class="lbl" style="margin-bottom:6px">Temuan</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.t, c: spikes.includes(r) ? C.hl : C.s2, tip: `${r.k}: ${num(r.t)} temuan · ${rp(r.rp)}` })), { color: C.s2, every: 'auto' })}</div></div>
-     ${spikes.length ? `<div class="note"><b>Lonjakan temuan:</b> ${spikes.slice(0, 4).map((s) => `${b.mode === 'bulan' ? blthLabel(+s.k.replace('-', '')) : tglPendek(s.k)} (${num(s.t)} temuan, ${rp(s.rp)})`).join('; ')}. Batang berwarna gelap = lebih dari 3× median.</div>` : ''}`);
+  // data TS terbayar per periode & golongan
+  const tsMap = new Map();
+  for (const x of d.ts_daily || []) {
+    const kk = bucketKey(x.tgl, b.mode);
+    const cur = tsMap.get(kk) || { k: kk, kwh: {}, rp: {} };
+    cur.kwh[x.gol] = (cur.kwh[x.gol] || 0) + (+x.kwh || 0);
+    cur.rp[x.gol] = (cur.rp[x.gol] || 0) + (+x.rp || 0);
+    tsMap.set(kk, cur);
+  }
+  const tsRows = [...tsMap.values()].sort((a, c2) => (a.k < c2.k ? -1 : 1));
+  const tsKeys = GOL_ORDER.slice().reverse().filter((g) => tsRows.some((r) => r.kwh[g] || r.rp[g]));
+  const tabs = [['periksa', 'Pemeriksaan & temuan'], ['kwh', 'kWh TS terbayar'], ['rp', 'Rp TS terbayar']];
+  let body;
+  if (trendView === 'periksa') {
+    body = `<div class="two"><div><div class="lbl" style="margin-bottom:6px">Pemeriksaan</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.n, tip: `${r.k}: ${num(r.n)} pemeriksaan` })), { every: 'auto' })}</div>
+     <div><div class="lbl" style="margin-bottom:6px">Temuan</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.t, c: spikes.includes(r) ? C.hl : C.s2, tip: `${r.k}: ${num(r.t)} temuan` })), { color: C.s2, every: 'auto' })}</div></div>
+     ${spikes.length ? `<div class="note"><b>Lonjakan temuan:</b> ${spikes.slice(0, 4).map((x) => `${b.mode === 'bulan' ? blthLabel(+x.k.replace('-', '')) : tglPendek(x.k)} (${num(x.t)} temuan)`).join('; ')}. Batang berwarna gelap = lebih dari 3× median.</div>` : ''}`;
+  } else {
+    const isK = trendView === 'kwh';
+    const fmt = isK ? (v) => num(v) : (v) => rp(v);
+    const tot = sumBy(d.gol_ts || [], isK ? 'kwh' : 'rp');
+    body = tsRows.length ? `<div class="lbl" style="margin-bottom:6px">${isK ? 'kWh' : 'Rp TS'} terbayar per golongan · total ${fmt(tot)}</div>` +
+      vstack(tsRows.map((r) => ({ l: bucketLabel(r.k, b.mode), parts: isK ? r.kwh : r.rp, tip: b.mode === 'bulan' ? blthLabel(+r.k.replace('-', '')) : tglPendek(r.k) })), tsKeys, GOLC, { fmt, every: 'auto', h: 170 }) +
+      legend(GOL_ORDER.filter((g) => tsKeys.includes(g)).map((g) => [g, GOLC[g]])) +
+      '<p class="sub">Sumber: Laporan TS terbayar menurut tanggal register. Golongan "KWH" digabung ke K2; DKRP dan UPDATEANGSURAN tidak ditampilkan.</p>'
+      : empty(d.ts?.min ? `Tidak ada Laporan TS terbayar pada periode ini.<br>Data tersedia ${rentang(d.ts.min, d.ts.max)}.` : 'Belum ada Laporan TS terbayar.');
+  }
+  const trend = card('Tren ' + unit, null, `<div class="seg" role="tablist">${tabs.map(([kk, t]) => `<button type="button" role="tab" aria-selected="${trendView === kk}" data-tv="${kk}" class="${trendView === kk ? 'on' : ''}">${t}</button>`).join('')}</div>${body}`);
   const comp = golTsCard(d, ctx);
   const lay = Object.fromEntries(d.layanan.map((l) => [l.k, l]));
   const ins = [];
@@ -96,6 +127,7 @@ async function ringkasan(ctx) {
   if (c) ins.push(`Dibanding periode pembanding: pemeriksaan ${delta(k.n, c.n)}, temuan ${delta(k.t, c.t)}, nilai TS ${delta(k.rp, c.rp)}.`);
   ctx.el.innerHTML = cmpTxt + anom + kp + `<div class="two">${trend}${comp}</div>` + card('Catatan analis (otomatis)', null, `<ul class="ins">${ins.map((x) => `<li>${x}</li>`).join('')}</ul>`);
   const ga = ctx.el.querySelector('#goanom'); if (ga) ga.onclick = () => { DQ.ap2t = 'ANOMALI'; DQ.page = 0; };
+  ctx.el.querySelectorAll('[data-tv]').forEach((bt) => bt.onclick = () => { trendView = bt.dataset.tv; ringkasan(ctx); });
 }
 
 // ======================= TEMUAN =======================
@@ -167,6 +199,99 @@ async function kinerja(ctx) {
   ctx.el.querySelector('#xpt').onclick = () => exportXlsx(`kinerja_petugas_${ctx.f.from}_${ctx.f.to}.xlsx`, [['Petugas', rows.map((r) => ({ Petugas: title(r.nama), Regu: r.regu, Hari: r.hari, Diperiksa: r.n, Temuan: r.t, 'Hit rate (%)': +r.hit.toFixed(2), 'Rp TS': +r.rp, 'kWh TS': +r.kwh, 'Median durasi (mnt)': r.dur }))]]);
 }
 
+
+// ---------- Pencarian lokasi & pelanggan terdekat (Peta & Cakupan) ----------
+const SS = { q: '', mode: 'dil', rad: 100, pt: null, results: null, near: null, msg: '' };
+function searchCardHtml() {
+  return card('Cari pelanggan terdekat', 'Cari dengan IDPEL, nama/alamat di DIL, atau alamat bebas. Bisa juga klik langsung di peta. Hasilnya daftar pelanggan dalam radius maks. 100 m, diurutkan dari yang terdekat.',
+    `<form id="sf" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+      <div class="fld"><label for="sm">CARI BERDASARKAN</label><select id="sm"><option value="dil" ${SS.mode === 'dil' ? 'selected' : ''}>IDPEL / nama / alamat DIL</option><option value="geo" ${SS.mode === 'geo' ? 'selected' : ''}>Alamat bebas (OpenStreetMap)</option></select></div>
+      <div class="fld" style="flex:1 1 260px"><label for="sq">KATA KUNCI</label><input id="sq" value="${esc(SS.q)}" placeholder="mis. 547400169692 · KAHFI 1 RT1 · Jl. Lenteng Agung Raya 50" style="width:100%"></div>
+      <div class="fld"><label for="srad">RADIUS</label><select id="srad">${[25, 50, 75, 100].map((r) => `<option value="${r}" ${SS.rad === r ? 'selected' : ''}>${r} m</option>`).join('')}</select></div>
+      <button class="btn pri" type="submit">${icon(IC.search, 16, '#fff')}Cari</button></form>
+     <div id="sres"></div>
+     <div class="covwrap"><div class="leaf" id="smap" style="flex:1 1 420px;height:420px"></div><div id="snear" style="flex:1 1 420px;min-width:0"></div></div>`);
+}
+function bindSearch(ctx) {
+  const box = ctx.el;
+  const f = box.querySelector('#sf'); if (!f) return;
+  let m = null, layer = null;
+  if (window.L) {
+    m = osm(box.querySelector('#smap'));
+    m.setView(SS.pt ? [SS.pt.lat, SS.pt.lon] : [-6.30, 106.83], SS.pt ? 18 : 12);
+    layer = window.L.layerGroup().addTo(m);
+    m.on('click', (e) => { SS.pt = { lat: e.latlng.lat, lon: e.latlng.lng, label: `Titik ${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}` }; near(); });
+  }
+  const resBox = box.querySelector('#sres'), nearBox = box.querySelector('#snear');
+  const renderResults = () => {
+    if (!SS.results) { resBox.innerHTML = SS.msg ? `<p class="sub">${esc(SS.msg)}</p>` : ''; return; }
+    if (!SS.results.length) { resBox.innerHTML = '<p class="sub">Tidak ada hasil. Coba kata kunci lain.</p>'; return; }
+    resBox.innerHTML = `<div class="lbl" style="margin-bottom:6px">${num(SS.results.length)} hasil, pilih salah satu:</div><div style="display:flex;flex-wrap:wrap;gap:6px">${SS.results.map((r, i) =>
+      `<button type="button" class="btn sm" data-ri="${i}" style="display:block;height:auto;min-height:32px;padding:6px 10px;white-space:normal;text-align:left;max-width:420px;line-height:1.4">${r.idpel ? `<span class="mono">${esc(r.idpel)}</span>&nbsp;` : ''}${esc(title(r.nama || r.label || ''))}${r.alamat ? ` · <small>${esc(r.alamat)}</small>` : ''}</button>`).join('')}</div>`;
+    resBox.querySelectorAll('[data-ri]').forEach((b) => b.onclick = () => {
+      const r = SS.results[+b.dataset.ri];
+      SS.pt = { lat: +r.lat, lon: +r.lon, label: r.idpel ? `${r.idpel} · ${title(r.nama || '')}` : r.label, idpel: r.idpel || null };
+      near();
+    });
+  };
+  const colOf = (p) => (p.status === 'NON-DIL' ? '#b84a1e' : p.last_gol && p.last_gol !== 'Sesuai' ? C.s2 : p.last_tgl ? C.s1 : C.gray);
+  const renderNear = () => {
+    if (layer) layer.clearLayers();
+    if (!SS.pt) { nearBox.innerHTML = empty('Pilih hasil pencarian atau klik di peta untuk melihat pelanggan terdekat'); return; }
+    if (layer) {
+      window.L.circle([SS.pt.lat, SS.pt.lon], { radius: SS.rad, color: '#0E1726', weight: 1.5, fill: false, dashArray: '4 3' }).addTo(layer);
+      window.L.circleMarker([SS.pt.lat, SS.pt.lon], { radius: 7, color: '#fff', weight: 2, fillColor: '#d03b3b', fillOpacity: 1 }).bindTooltip(esc(SS.pt.label || 'Titik cari')).addTo(layer);
+      for (const p of SS.near || []) {
+        if (!p.lat) continue;
+        window.L.circleMarker([p.lat, p.lon], { radius: 5, color: '#fff', weight: 1, fillColor: colOf(p), fillOpacity: 0.95 })
+          .bindPopup(`<b>${esc(p.nama || '-')}</b><br>IDPEL ${esc(p.idpel)} · ${esc(p.tarif || '')}/${num(p.daya)} VA<br>${esc(p.alamat || '')}<br>${p.last_tgl ? `Diperiksa ${tglPendek(p.last_tgl)} (${esc(p.last_gol)})` : 'Belum pernah diperiksa'}<br>Jarak ${num(p.jarak)} m · <a href="${gmaps(p.lat, p.lon)}" target="_blank" rel="noopener">Google Maps</a>`).addTo(layer);
+      }
+      m.setView([SS.pt.lat, SS.pt.lon], SS.rad <= 50 ? 19 : 18);
+    }
+    const nr = SS.near;
+    if (!nr) { nearBox.innerHTML = '<div class="loading"><span class="spin"></span>Mencari pelanggan terdekat…</div>'; return; }
+    const tm = nr.filter((p) => p.last_gol && p.last_gol !== 'Sesuai').length, ins = nr.filter((p) => p.last_tgl).length;
+    nearBox.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><div><div class="lbl">${esc(SS.pt.label || '')}</div><div class="sub" style="margin-top:2px">${num(nr.length)} pelanggan dalam ${SS.rad} m · ${num(ins)} pernah diperiksa · ${num(tm)} temuan</div></div>
+      <button class="btn sm" type="button" id="snx">${icon(IC.dl, 15)}Ekspor Excel</button></div>
+      ${legend([['Belum diperiksa', C.gray], ['Diperiksa, sesuai', C.s1], ['Temuan', C.s2], ['Non-DIL (P4)', '#b84a1e']])}` +
+      table([{ h: 'Jarak', k: 'jarak', r: 1, f: (v) => num(v) + ' m' }, { h: 'IDPEL', k: 'idpel', f: (v) => `<span class="mono" style="font-size:12px">${esc(v)}</span>` },
+        { h: 'Nama', k: 'nama', f: (v) => esc(title(v || '-')) }, { h: 'Alamat', k: 'alamat', wrapS: 1, f: (v) => `<small>${esc(v || '-')}</small>` },
+        { h: 'Tarif/Daya', k: 'tarif', f: (v, r) => `${esc(v || '-')} / ${num(r.daya)}` },
+        { h: 'Periksa terakhir', k: 'last_tgl', f: (v, r) => (v ? `${tglPendek(v)} ${r.last_gol && r.last_gol !== 'Sesuai' ? golChip(r.last_gol) : '<span class="chip">Sesuai</span>'}` : '<span class="chip">Belum</span>') },
+        { h: 'Skor', k: 'skor', r: 1, f: (v) => (v ? num(v) : '–') }], nr, { maxh: 360 });
+    const x = nearBox.querySelector('#snx');
+    if (x) x.onclick = () => exportXlsx(`pelanggan_sekitar_${(SS.pt.idpel || 'titik')}_${SS.rad}m.xlsx`, [['Sekitar', nr.map((p) => ({ 'Jarak (m)': +p.jarak, IDPEL: p.idpel, Nama: p.nama, Alamat: p.alamat, Tarif: p.tarif, Daya: p.daya, Layanan: p.layanan, Gardu: p.gardu,
+      Status: p.status, 'Periksa terakhir': p.last_tgl, 'Golongan terakhir': p.last_gol, 'Skor risiko': p.skor, Lat: p.lat, Lon: p.lon, 'Google Maps': gmaps(p.lat, p.lon) }))]]);
+  };
+  const near = async () => {
+    SS.near = null; renderNear();
+    try { SS.near = await ctx.rpc('f_sekitar', { p_lat: SS.pt.lat, p_lon: SS.pt.lon, p_radius: SS.rad }, { cache: false }); }
+    catch (e) { SS.near = []; nearBox.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+    if (box.isConnected) renderNear();
+  };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    SS.q = box.querySelector('#sq').value.trim(); SS.mode = box.querySelector('#sm').value;
+    if (SS.q.length < 3) { SS.results = null; SS.msg = 'Isi minimal 3 karakter.'; renderResults(); return; }
+    resBox.innerHTML = '<span class="spin"></span>Mencari…';
+    try {
+      if (SS.mode === 'dil') {
+        SS.results = await ctx.rpc('f_cari', { p_q: SS.q }, { cache: false });
+      } else {
+        const u = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&countrycodes=id&accept-language=id&viewbox=106.74,-6.19,106.93,-6.43&q=${encodeURIComponent(SS.q)}`;
+        const r = await fetch(u, { headers: { Accept: 'application/json' } });
+        const js = await r.json();
+        SS.results = js.map((g) => ({ lat: +g.lat, lon: +g.lon, label: g.display_name }));
+      }
+      if (SS.results.length === 1) { const r = SS.results[0]; SS.pt = { lat: +r.lat, lon: +r.lon, label: r.idpel ? `${r.idpel} · ${title(r.nama || '')}` : r.label, idpel: r.idpel || null }; near(); }
+    } catch (er) { SS.results = null; SS.msg = 'Pencarian gagal: ' + er.message; }
+    renderResults();
+  };
+  box.querySelector('#srad').onchange = (e) => { SS.rad = Number(e.target.value); if (SS.pt) near(); };
+  renderResults();
+  if (SS.pt) { if (SS.near) renderNear(); else near(); } else renderNear();
+}
+
 // ======================= CAKUPAN =======================
 let selCell = null;
 async function cakupan(ctx) {
@@ -207,7 +332,8 @@ async function cakupan(ctx) {
     { h: 'Cakupan', k: 'x', r: 1, f: (v, r) => pct(ratio(r.ins, r.pop), 2) }, { h: 'Temuan', k: 'tm', r: 1, f: num }, { h: 'Hit rate', k: 'y', r: 1, f: (v, r) => pct(ratio(r.tm, r.ins)) }], d.kec));
   const kl = card('Per kelurahan', 'Diurutkan dari temuan terbanyak.', table([{ h: 'Kelurahan', k: 'k', f: (v) => esc(title(v)) }, { h: 'Kecamatan', k: 'kec', f: (v) => esc(title(v)) },
     { h: 'Pelanggan aktif', k: 'pop', r: 1, f: num }, { h: 'Diperiksa', k: 'ins', r: 1, f: num }, { h: 'Cakupan', k: 'x', r: 1, f: (v, r) => pct(ratio(r.ins, r.pop), 2) }, { h: 'Temuan', k: 'tm', r: 1, f: num }], d.kel, { maxh: 420 }));
-  ctx.el.innerHTML = kp + covCard + ptCard + `<div class="two">${kt}${kl}</div>`;
+  ctx.el.innerHTML = kp + searchCardHtml() + covCard + ptCard + `<div class="two">${kt}${kl}</div>`;
+  bindSearch(ctx);
   // peta titik
   if (window.L) {
     const m = osm(ctx.el.querySelector('#ptmap'));
@@ -355,7 +481,7 @@ async function pembayaran(ctx) {
   const tc = card('Tunai vs angsuran', 'Komposisi nilai Total P2TL pada periode.', stack([{ l: 'Tunai', v: +k.tunai, c: C.s1, tip: `Tunai ${rp(k.tunai)}` }, { l: 'Angsuran', v: +k.angsur, c: C.light, tip: `Angsuran ${rp(k.angsur)}` }], 32) +
     legend([[`Tunai · ${rp(k.tunai)} (${pct(ratio(k.tunai, k.total), 0)})`, C.s1], [`Angsuran · ${rp(k.angsur)} (${pct(ratio(k.angsur, k.total), 0)})`, C.light]]) +
     `<div><div class="lbl" style="margin:6px 0 8px">Umur piutang angsuran (semua data, sejak tanggal register)</div>${hbars(d.aging.map((a) => ({ l: AG[a.o], v: +a.rp, x: `· ${num(a.n)} plg` })), { fmt: (v) => rp(v), lw: 90, vw: 150 })}</div>`);
-  const gc = card('Realisasi per golongan', null, hbars(d.gol.map((g) => ({ l: g.k || '-', v: +g.rp, c: GOLC[g.k] || '#9AA3B2', x: `· ${num(g.n)} plg` })), { fmt: (v) => rp(v), lw: 50, vw: 150 }) + '<p class="sub">DKRP = koreksi rekening, ditampilkan terpisah dari golongan pelanggaran.</p>');
+  const gc = card('Realisasi per golongan', null, hbars(d.gol.map((g) => ({ l: g.k || '-', v: +g.rp, c: GOLC[g.k] || '#9AA3B2', x: `· ${num(g.n)} plg` })), { fmt: (v) => rp(v), lw: 50, vw: 150 }) + '<p class="sub">Golongan "KWH" digabung ke K2. DKRP dan UPDATEANGSURAN tidak ditampilkan.</p>');
   const dc = card('Realisasi per tanggal register', null, vbars(d.daily.map((x) => ({ l: String(+x.tgl.slice(8, 10)), v: +x.rp, tip: `${x.tgl}: ${num(x.n)} pelunasan · ${rp(x.rp)}` })), { color: C.s3, fmt: (v) => rp(v), every: 'auto' }));
   const top = card('Pembayaran terbesar', null, table([{ h: 'No. Agenda', k: 'no_agenda', f: (v) => `<span class="mono" style="font-size:12px">${esc(v)}</span>` }, { h: 'Nama', k: 'nama', f: (v) => esc(title(v)) },
     { h: 'Gol.', k: 'golongan' }, { h: 'Tarif/Daya', k: 'tarif', f: (v, r) => `${esc(v)} / ${num(r.daya)}` }, { h: 'Tgl register', k: 'tgl_register', f: tglPendek },

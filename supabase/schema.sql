@@ -175,6 +175,12 @@ do $$ begin
 end $$;
 alter table ts_bayar alter column no_agenda drop not null;
 create index if not exists ts_bayar_agenda_idx on ts_bayar (no_agenda);
+-- Golongan untuk dashboard: P1–P4/K1–K2 apa adanya; golongan lain (mis. "KWH") digabung ke K2;
+-- DKRP dan UPDATEANGSURAN tidak ditampilkan (null)
+alter table ts_bayar add column if not exists gol_ts text generated always as (
+  case when golongan in ('P1','P2','P3','P4','K1','K2') then golongan
+       when golongan in ('DKRP','UPDATEANGSURAN') then null
+       else 'K2' end) stored;
 create index if not exists ts_bayar_tgl_idx on ts_bayar (tgl_register);
 create index if not exists ts_bayar_idpel_idx on ts_bayar (idpel);
 
@@ -288,12 +294,18 @@ begin
         'kwh_anomali', coalesce(sum(kwh_ts) filter (where not ts_wajar), 0),
         'aktif', (select n from aktif)) from b),
     'ts', (select json_build_object('n', count(*), 'rp_ts', coalesce(sum(rp_ts), 0), 'total', coalesce(sum(total_p2tl), 0), 'kwh', coalesce(sum(kwh), 0),
-        'min', (select min(tgl_register) from ts_bayar), 'max', (select max(tgl_register) from ts_bayar))
-        from ts_bayar where tgl_register between p_from and p_to),
+        'min', (select min(tgl_register) from ts_bayar where gol_ts is not null), 'max', (select max(tgl_register) from ts_bayar where gol_ts is not null))
+        from ts_bayar where tgl_register between p_from and p_to and gol_ts is not null),
+    'ts_cmp', (select case when p_cmp_from is null then null else json_build_object('n', count(*), 'rp_ts', coalesce(sum(rp_ts), 0),
+        'total', coalesce(sum(total_p2tl), 0), 'kwh', coalesce(sum(kwh), 0)) end
+        from ts_bayar where tgl_register between p_cmp_from and p_cmp_to and gol_ts is not null),
     'gol_ts', (select coalesce(json_agg(x order by x.rp desc), '[]') from (
-        select golongan gol, count(*) n, coalesce(sum(rp_ts), 0) rp, coalesce(sum(total_p2tl), 0) total, coalesce(sum(kwh), 0) kwh,
+        select gol_ts gol, count(*) n, coalesce(sum(rp_ts), 0) rp, coalesce(sum(total_p2tl), 0) total, coalesce(sum(kwh), 0) kwh,
                coalesce(sum(tunai), 0) tunai, coalesce(sum(angsur), 0) angsur
-        from ts_bayar where tgl_register between p_from and p_to group by 1) x),
+        from ts_bayar where tgl_register between p_from and p_to and gol_ts is not null group by 1) x),
+    'ts_daily', (select coalesce(json_agg(x order by x.tgl), '[]') from (
+        select tgl_register tgl, gol_ts gol, count(*) n, coalesce(sum(kwh), 0) kwh, coalesce(sum(rp_ts), 0) rp
+        from ts_bayar where tgl_register between p_from and p_to and gol_ts is not null group by 1, 2) x),
     'cmp', (select case when p_cmp_from is null then null else json_build_object(
         'n', count(*), 't', count(*) filter (where gol <> 'Sesuai'),
         'rp', coalesce(sum(rp_ts_ok), 0), 'kwh', coalesce(sum(kwh_ts_ok), 0),
@@ -411,9 +423,15 @@ create policy skor_dasar_read on skor_dasar for select to authenticated using (i
 
 create or replace function f_refresh_skor() returns integer
 language plpgsql volatile security definer set search_path = public as $$
-declare v_blth int; v_has_pra boolean; n int;
 begin
   if not can_upload() then raise exception 'Akses ditolak: hanya pengunggah'; end if;
+  return f_refresh_skor_internal();
+end $$;
+
+create or replace function f_refresh_skor_internal() returns integer
+language plpgsql volatile security definer set search_path = public as $$
+declare v_blth int; v_has_pra boolean; n int;
+begin
   v_blth := greatest((select max(blth) from pakai_paska), (select max(blth) from pakai_pra));
   delete from skor_dasar where true;
   if v_blth is null then return 0; end if;
@@ -510,21 +528,21 @@ language plpgsql stable security definer set search_path = public as $$
 declare r json;
 begin
   perform guard();
-  with t as (select * from ts_bayar where tgl_register between p_from and p_to),
+  with t as (select * from ts_bayar where tgl_register between p_from and p_to and gol_ts is not null),
   b as (select * from f_base(p_from, p_to, p_regu, p_kec, p_layanan) where gol <> 'Sesuai'),
   bm as (select b.*, tb.no_agenda paid_agenda, tb.total_p2tl paid, tb.tunai, tb.angsur, tb.tgl_register
          from b left join lateral (
            select * from ts_bayar t
-           where t.no_agenda = b.no_agenda
-              or (b.idpel ~ '^[0-9]+$' and t.idpel = b.idpel and t.tgl_register >= b.tgl)
+           where t.gol_ts is not null and (t.no_agenda = b.no_agenda
+              or (b.idpel ~ '^[0-9]+$' and t.idpel = b.idpel and t.tgl_register >= b.tgl))
            order by (t.no_agenda = b.no_agenda) desc, t.tgl_register limit 1) tb on true)
   select json_build_object(
     'kpi', (select json_build_object('n', count(*), 'total', coalesce(sum(total_p2tl), 0), 'rp_ts', coalesce(sum(rp_ts), 0),
         'kwh', coalesce(sum(kwh), 0), 'tunai', coalesce(sum(tunai), 0), 'angsur', coalesce(sum(angsur), 0),
         'n_tunai', count(*) filter (where coalesce(angsur, 0) = 0), 'n_angsur', count(*) filter (where angsur > 0)) from t),
-    'gol', (select coalesce(json_agg(x order by x.rp desc), '[]') from (select golongan k, count(*) n, coalesce(sum(total_p2tl), 0) rp from t group by 1) x),
+    'gol', (select coalesce(json_agg(x order by x.rp desc), '[]') from (select gol_ts k, count(*) n, coalesce(sum(total_p2tl), 0) rp, coalesce(sum(kwh), 0) kwh from t group by 1) x),
     'daily', (select coalesce(json_agg(x order by x.tgl), '[]') from (select tgl_register tgl, count(*) n, coalesce(sum(total_p2tl), 0) rp from t group by 1) x),
-    'top', (select coalesce(json_agg(x), '[]') from (select no_agenda, nama, golongan, tarif, daya, total_p2tl, tunai, angsur, tgl_register from t order by total_p2tl desc limit 10) x),
+    'top', (select coalesce(json_agg(x), '[]') from (select no_agenda, nama, gol_ts golongan, tarif, daya, kwh, total_p2tl, tunai, angsur, tgl_register from t order by total_p2tl desc limit 10) x),
     'funnel', (select json_build_object(
         'temuan', count(*), 'rp_temuan', coalesce(sum(rp_ts_ok), 0), 'agenda_kosong', count(*) filter (where coalesce(no_agenda, '-') = '-'),
         'ap2t', count(*) filter (where ts_ap2t = 'Ya'),
@@ -534,8 +552,8 @@ begin
     'aging', (select coalesce(json_agg(x order by x.o), '[]') from (
         select case when m < 3 then 1 when m < 6 then 2 when m < 12 then 3 else 4 end o, count(*) n, coalesce(sum(angsur), 0) rp
         from (select angsur, (extract(year from age(current_date, tgl_register)) * 12 + extract(month from age(current_date, tgl_register))) m
-              from ts_bayar where angsur > 0) z group by 1) x),
-    'ts_range', json_build_object('min', (select min(tgl_register) from ts_bayar), 'max', (select max(tgl_register) from ts_bayar))
+              from ts_bayar where angsur > 0 and gol_ts is not null) z group by 1) x),
+    'ts_range', json_build_object('min', (select min(tgl_register) from ts_bayar where gol_ts is not null), 'max', (select max(tgl_register) from ts_bayar where gol_ts is not null))
   ) into r;
   return r;
 end $$;
@@ -581,13 +599,13 @@ language plpgsql stable security definer set search_path = public as $$
 declare r json;
 begin
   perform guard();
-  with b as (select f.*, tb.total_p2tl paid, tb.tunai, tb.angsur, tb.tgl_register, tb.golongan ts_gol, tb.kwh ts_kwh, tb.rp_ts ts_rp,
+  with b as (select f.*, tb.total_p2tl paid, tb.tunai, tb.angsur, tb.tgl_register, tb.gol_ts ts_gol, tb.kwh ts_kwh, tb.rp_ts ts_rp,
                     d.merk dil_merk, d.tahun_tera, d.kelurahan, d.kecamatan, d.gardu dil_gardu, d.status dil_status, d.tgl_nyala
              from f_base(p_from, p_to, p_regu, p_kec, p_layanan) f
              left join lateral (
                select * from ts_bayar t
-               where t.no_agenda = f.no_agenda
-                  or (f.idpel ~ '^[0-9]+$' and t.idpel = f.idpel and t.tgl_register >= f.tgl)
+               where t.gol_ts is not null and (t.no_agenda = f.no_agenda
+                  or (f.idpel ~ '^[0-9]+$' and t.idpel = f.idpel and t.tgl_register >= f.tgl))
                order by (t.no_agenda = f.no_agenda) desc, t.tgl_register limit 1) tb on true
              left join dil d on d.idpel = f.idpel
              where f.gol <> 'Sesuai'
@@ -633,6 +651,9 @@ begin
     'pra', (select coalesce(json_agg(x order by x.blth), '[]') from (select blth, count(*) n from pakai_pra group by 1) x),
     'dil', json_build_object('n', (select count(*) from dil), 'aktif', (select count(*) from dil where status = 'AKTIF'), 'snapshot', (select max(snapshot) from dil)),
     'ts', json_build_object('n', (select count(*) from ts_bayar), 'min', (select min(tgl_register) from ts_bayar), 'max', (select max(tgl_register) from ts_bayar)),
+    'months', json_build_object(
+       'pemeriksaan', (select coalesce(json_agg(x order by x.blth), '[]') from (select blth_of(tgl) blth, count(*) n from pemeriksaan where tgl is not null group by 1) x),
+       'ts', (select coalesce(json_agg(x order by x.blth), '[]') from (select blth_of(tgl_register) blth, count(*) n from ts_bayar where tgl_register is not null group by 1) x)),
     'log', (select coalesce(json_agg(x order by x.created_at desc), '[]') from (select * from upload_log order by created_at desc limit 30) x),
     'db_size', pg_database_size(current_database())
   ) into r;
@@ -650,6 +671,76 @@ begin
   elsif p_dataset = 'ts' then delete from ts_bayar where blth_of(tgl_register) = p_blth; get diagnostics n = row_count;
   else raise exception 'dataset tidak dikenal'; end if;
   return n;
+end $$;
+
+
+-- Hapus data (khusus admin): per bulan, atau seluruh DIL
+create or replace function f_hapus_data(p_dataset text, p_blth int default null) returns integer
+language plpgsql volatile security definer set search_path = public as $$
+declare n int := 0;
+begin
+  if not is_admin() then raise exception 'Akses ditolak: hanya admin'; end if;
+  if p_dataset = 'pemeriksaan' then delete from pemeriksaan where blth_of(tgl) = p_blth; get diagnostics n = row_count;
+  elsif p_dataset = 'paska' then delete from pakai_paska where blth = p_blth; get diagnostics n = row_count; perform f_refresh_skor_internal();
+  elsif p_dataset = 'pra' then delete from pakai_pra where blth = p_blth; get diagnostics n = row_count; perform f_refresh_skor_internal();
+  elsif p_dataset = 'ts' then delete from ts_bayar where blth_of(tgl_register) = p_blth; get diagnostics n = row_count;
+  elsif p_dataset = 'dil' then delete from dil where true; get diagnostics n = row_count; delete from skor_dasar where true;
+  else raise exception 'dataset tidak dikenal'; end if;
+  insert into upload_log (dataset, filename, periode, n_rows, info, uploaded_by)
+  values (p_dataset, '(dihapus)', coalesce(p_blth::text, 'semua'), -n, '{"hapus": true}', me_email());
+  return n;
+end $$;
+
+-- Cari pelanggan di DIL: IDPEL (awal angka) atau kata pada nama/alamat
+create or replace function f_cari(p_q text) returns json
+language plpgsql stable security definer set search_path = public as $$
+declare r json; q text := trim(coalesce(p_q, ''));
+begin
+  perform guard();
+  if length(q) < 3 then return '[]'::json; end if;
+  select coalesce(json_agg(x), '[]') into r from (
+    select d.idpel, d.nama, d.alamat, d.tarif, d.daya, d.layanan, d.gardu, d.kelurahan, d.status,
+           round(d.lat::numeric, 6) lat, round(d.lon::numeric, 6) lon
+    from dil d
+    where d.lat is not null and (
+      (q ~ '^[0-9]+$' and d.idpel like q || '%')
+      or (q !~ '^[0-9]+$' and not exists (
+            select 1 from unnest(string_to_array(upper(q), ' ')) w
+            where w <> '' and upper(coalesce(d.nama, '') || ' ' || coalesce(d.alamat, '')) not like '%' || w || '%')))
+    order by (d.status = 'AKTIF') desc, d.idpel limit 25) x;
+  return r;
+end $$;
+
+-- Pelanggan & temuan di sekitar satu titik (radius maks. 100 m)
+create or replace function f_sekitar(p_lat double precision, p_lon double precision, p_radius int default 100) returns json
+language plpgsql stable security definer set search_path = public as $$
+declare r json; rad numeric := least(greatest(coalesce(p_radius, 100), 10), 100);
+        dlat double precision; dlon double precision;
+begin
+  perform guard();
+  dlat := rad / 111320.0; dlon := rad / (111320.0 * cos(radians(p_lat)));
+  with pel0 as (select d.idpel, d.nama, d.alamat, d.tarif, d.daya, d.layanan, d.gardu, d.status, d.lat, d.lon,
+                 111320.0 * sqrt(power(d.lat - p_lat, 2) + power((d.lon - p_lon) * cos(radians(p_lat)), 2)) jarak
+          from dil d
+          where d.gx between floor((p_lon - dlon) / 0.005)::int and floor((p_lon + dlon) / 0.005)::int
+            and d.gy between floor((p_lat - dlat) / 0.005)::int and floor((p_lat + dlat) / 0.005)::int
+            and d.lat between p_lat - dlat and p_lat + dlat and d.lon between p_lon - dlon and p_lon + dlon),
+  pel as (select p0.*, l.tgl last_tgl, l.gol last_gol, s.skor0 skor
+          from pel0 p0
+          left join lateral (select tgl, gol from pemeriksaan pm where pm.idpel = p0.idpel order by tgl desc limit 1) l on true
+          left join skor_dasar s on s.idpel = p0.idpel
+          where p0.jarak <= rad),
+  non as (select p.idpel, p.nama, null::text alamat, p.tarif, p.daya, p.jenislayanan layanan, p.gardu, 'NON-DIL'::text status, p.lat, p.lon,
+                 111320.0 * sqrt(power(p.lat - p_lat, 2) + power((p.lon - p_lon) * cos(radians(p_lat)), 2)) jarak,
+                 p.tgl last_tgl, p.gol last_gol, null::int skor
+          from pemeriksaan p
+          where p.lat between p_lat - dlat and p_lat + dlat and p.lon between p_lon - dlon and p_lon + dlon
+            and not exists (select 1 from dil d where d.idpel = p.idpel))
+  select coalesce(json_agg(x order by x.jarak), '[]') into r from (
+    select idpel, nama, alamat, tarif, daya, layanan, gardu, status, round(lat::numeric, 6) lat, round(lon::numeric, 6) lon,
+           round(jarak::numeric, 0) jarak, last_tgl, last_gol, skor
+    from (select * from pel union all select * from non) u where jarak <= rad order by jarak limit 300) x;
+  return r;
 end $$;
 
 -- Catat penghapusan bulan di riwayat
@@ -678,7 +769,7 @@ declare f record;
 begin
   for f in select p.oid::regprocedure sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public' and p.proname in ('f_meta','f_ringkasan','f_kinerja','f_cakupan','f_cell','f_risiko','f_pembayaran',
-             'f_recovery','f_detail','f_usage_hist','f_datasets','f_clear_month','f_after_upload','f_log_delete','my_role','is_member','can_upload','is_admin')
+             'f_recovery','f_detail','f_usage_hist','f_datasets','f_clear_month','f_after_upload','f_log_delete','f_hapus_data','f_cari','f_sekitar','my_role','is_member','can_upload','is_admin')
   loop
     execute format('revoke all on function %s from public, anon', f.sig);
     execute format('grant execute on function %s to authenticated', f.sig);
@@ -690,6 +781,7 @@ drop function if exists f_usage_month(int);
 revoke execute on function f_base(date, date, int, text, text) from public, anon, authenticated;
 revoke execute on function guard() from public, anon, authenticated;
 revoke execute on function f_refresh_skor() from public, anon, authenticated;
+revoke execute on function f_refresh_skor_internal() from public, anon, authenticated;
 
 -- Pengamanan akhir: tidak ada akses tanpa login ke tabel mana pun
 revoke all on all tables in schema public from anon;

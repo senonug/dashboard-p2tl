@@ -98,7 +98,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .vbars .max { position: absolute; right: 0; top: 0; font-size: 10.5px; color: var(--muted); font-family: var(--mono); }
 .vbars .cols { display: flex; gap: 2px; align-items: flex-end; position: relative; }
 .vbars .col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; cursor: default; }
-.vbars .col i { display: block; width: 74%; max-width: 22px; border-radius: 4px 4px 0 0; }
+.vbars .col i { display: block; width: 74%; max-width: 22px; border-radius: 4px 4px 0 0; flex: none; }
 .vbars .col:hover i { filter: brightness(0.88); }
 .vbars .col span { font-size: 10.5px; color: var(--muted); height: 14px; white-space: nowrap; }
 .stack { display: flex; gap: 2px; border-radius: 6px; overflow: hidden; }

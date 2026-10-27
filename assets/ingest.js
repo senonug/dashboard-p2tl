@@ -91,6 +91,20 @@ export function describePeriod(ds, st) {
   return st.minDate ? (st.minDate === st.maxDate ? st.minDate : `${st.minDate} s/d ${st.maxDate}`) : '-';
 }
 
+// Ubah baris ke CSV (lebih ringkas dari JSON karena nama kolom tidak diulang di setiap baris)
+export function toCsv(rows, cols) {
+  const cell = (v) => {
+    if (v === null || v === undefined) return 'NULL';
+    if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'NULL';
+    if (typeof v === 'boolean') return v ? 'true' : 'false';
+    const t = String(v);
+    return /[",\r\n]|^\s|\s$|^NULL$/.test(t) || t === '' ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  let out = cols.join(',') + '\n';
+  for (const r of rows) out += cols.map((c) => cell(r[c])).join(',') + '\n';
+  return out;
+}
+
 // Kirim ke Supabase/PostgREST memakai fetch (tanpa supabase-js agar bisa di worker)
 export async function applyRecords(parsed, cfg, onProgress = () => {}, signal) {
   const { url, apikey, token, filename, snapshot } = cfg;
@@ -107,12 +121,15 @@ export async function applyRecords(parsed, cfg, onProgress = () => {}, signal) {
   const rows = parsed.records;
   if (parsed.ds === 'dil' && snapshot) for (const r of rows) r.snapshot = snapshot;
   const n = rows.length;
-  let sent = 0;
+  const cols = n ? Object.keys(rows[0]) : [];
+  let sent = 0, bytes = 0;
   const conc = 3;
   let next = 0;
   const post = async (batch, attempt = 0) => {
+    const body = toCsv(batch, cols);
+    bytes += body.length;
     const r = await fetch(`${url}/rest/v1/${def.table}${def.key ? `?on_conflict=${def.key}` : ''}`, {
-      method: 'POST', headers: { ...H, Prefer: def.key ? 'resolution=merge-duplicates,return=minimal' : 'return=minimal' }, body: JSON.stringify(batch), signal });
+      method: 'POST', headers: { ...H, 'Content-Type': 'text/csv', Prefer: def.key ? 'resolution=merge-duplicates,return=minimal' : 'return=minimal' }, body, signal });
     if (!r.ok) {
       const t = await r.text();
       if (attempt < 3 && (r.status >= 500 || r.status === 429)) { await new Promise((ok) => setTimeout(ok, 1500 * (attempt + 1))); return post(batch, attempt + 1); }
@@ -132,10 +149,10 @@ export async function applyRecords(parsed, cfg, onProgress = () => {}, signal) {
   try { await rpc('f_after_upload', { p_dataset: parsed.ds }); } catch (e) { /* tidak fatal */ }
   const log = { dataset: parsed.ds, filename, periode: parsed.periode, n_rows: n,
     info: { rowsSeen: parsed.stats.rowsSeen, dup: parsed.stats.dup, skipped: parsed.stats.skipped, sheet: parsed.stats.sheet,
-            sensitive_dropped: parsed.stats.sensitive, trx: parsed.stats.extra.trx || null, status: parsed.stats.status } };
+            sensitive_dropped: parsed.stats.sensitive, trx: parsed.stats.extra.trx || null, status: parsed.stats.status, kirim_kb: Math.round(bytes / 1024) } };
   const lr = await fetch(`${url}/rest/v1/upload_log`, { method: 'POST', headers: { ...H, Prefer: 'return=minimal' }, body: JSON.stringify(log), signal });
   if (!lr.ok) throw new Error('Gagal mencatat riwayat unggah: ' + (await lr.text()));
-  return { sent: n };
+  return { sent: n, bytes };
 }
 
 export { DATASETS, REQUIRED };
