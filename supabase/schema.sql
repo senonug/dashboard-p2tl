@@ -429,17 +429,20 @@ begin
 end $$;
 
 create or replace function f_refresh_skor_internal() returns integer
-language plpgsql volatile security definer set search_path = public as $$
-declare v_blth int; v_has_pra boolean; n int;
+language plpgsql volatile security definer
+set search_path = public set work_mem = '32MB' set enable_mergejoin = off set max_parallel_workers_per_gather = 0
+as $$
+declare v_blth int; v_has_pra boolean; n int; b1 int; b2 int; b3 int;
 begin
   v_blth := greatest((select max(blth) from pakai_paska), (select max(blth) from pakai_pra));
-  delete from skor_dasar where true;
+  truncate skor_dasar;
   if v_blth is null then return 0; end if;
+  b1 := blth_add(v_blth, -1); b2 := blth_add(v_blth, -2); b3 := blth_add(v_blth, -3);
   v_has_pra := exists (select 1 from pakai_pra where blth = v_blth);
-  insert into skor_dasar
-  with pv_pas as (select idpel, avg(kwh) k from pakai_paska where blth between blth_add(v_blth, -3) and blth_add(v_blth, -1) group by idpel),
-  pv_pra as (select idpel, avg(kwh) k from pakai_pra where blth between blth_add(v_blth, -3) and blth_add(v_blth, -1) group by idpel),
-  m as (select d.idpel, d.nama, d.tarif, d.daya, d.layanan, d.gardu, d.kelurahan, d.kecamatan, d.merk, d.tahun_tera, d.lat, d.lon,
+  insert into skor_dasar (idpel, blth, layanan, jn, kwh, kd, beli, prev_k, skor0)
+  with pv_pas as materialized (select idpel, avg(kwh) k from pakai_paska where blth in (b1, b2, b3) group by idpel),
+  pv_pra as materialized (select idpel, avg(kwh) k from pakai_pra where blth in (b1, b2, b3) group by idpel),
+  m as (select d.idpel, d.daya, d.layanan, d.tahun_tera,
                case when d.layanan = 'PRABAYAR' then coalesce(pr.kwh, 0) / nullif(d.daya / 1000.0, 0) else ps.jam_nyala end jn,
                case when d.layanan = 'PRABAYAR' then coalesce(pr.kwh, 0) else ps.kwh end kwh,
                ps.kdbaca kd, pr.idpel is not null beli,
@@ -458,11 +461,19 @@ begin
              + (case when prev_k > 0 and kwh is not null and kwh < 0.5 * prev_k then 15 else 0 end)
              + (case when daya >= 2200 and jn is not null and jn < 40 then 10 else 0 end) skor0
         from m)
-  select idpel, v_blth, nama, tarif, daya, layanan, gardu, kelurahan, kecamatan, merk, tahun_tera, lat, lon, round(jn, 1), round(kwh, 1), kd, beli, round(prev_k, 1), skor0
+  select idpel, v_blth, layanan, round(jn, 1), round(kwh, 1), kd, beli, round(prev_k, 1), skor0
   from sc where skor0 > 0;
   get diagnostics n = row_count;
   analyze skor_dasar;
   return n;
+end $$;
+
+-- Hitung ulang skor sebagai panggilan tersendiri (dipanggil aplikasi setelah unggah/hapus DIL, DPM, OLAP)
+create or replace function f_hitung_skor() returns integer
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  if not can_upload() then raise exception 'Akses ditolak: hanya pengunggah'; end if;
+  return f_refresh_skor_internal();
 end $$;
 
 create or replace function f_risiko(p_from date, p_to date, p_regu int default null, p_kec text default null, p_layanan text default null,
@@ -485,9 +496,10 @@ begin
                 left join pakai_pra pr on pr.idpel = b.idpel and pr.blth = blth_of(b.tgl)),
   hist as (select distinct idpel from pemeriksaan where tgl > greatest(p_to, current_date) - 90 and idpel is not null),
   gtem as (select distinct d.gardu from pemeriksaan p join dil d on d.idpel = p.idpel where p.gol <> 'Sesuai' and p.tgl > p_to - 180 and d.gardu is not null),
-  uc0 as (select s.*, s.skor0 + case when g.gardu is not null then 5 else 0 end skor
-          from skor_dasar s left join gtem g on g.gardu = s.gardu
-          where (p_kec is null or s.kecamatan = p_kec) and (p_layanan is null or s.layanan = p_layanan)
+  uc0 as (select s.idpel, s.jn, s.kwh, s.kd, s.beli, s.prev_k, d.nama, d.tarif, d.daya, d.layanan, d.gardu, d.kelurahan, d.kecamatan, d.merk, d.tahun_tera, d.lat, d.lon,
+                 s.skor0 + case when g.gardu is not null then 5 else 0 end skor
+          from skor_dasar s join dil d on d.idpel = s.idpel left join gtem g on g.gardu = d.gardu
+          where (p_kec is null or d.kecamatan = p_kec) and (p_layanan is null or d.layanan = p_layanan)
             and not exists (select 1 from hist h where h.idpel = s.idpel)),
   uc as (select *, case when skor >= 60 then 'Tinggi' when skor >= 35 then 'Sedang' else 'Rendah' end kat from uc0),
   pop as (select count(*) n from dil d where d.status = 'AKTIF' and (p_kec is null or d.kecamatan = p_kec) and (p_layanan is null or d.layanan = p_layanan)
@@ -681,8 +693,8 @@ declare n int := 0;
 begin
   if not is_admin() then raise exception 'Akses ditolak: hanya admin'; end if;
   if p_dataset = 'pemeriksaan' then delete from pemeriksaan where blth_of(tgl) = p_blth; get diagnostics n = row_count;
-  elsif p_dataset = 'paska' then delete from pakai_paska where blth = p_blth; get diagnostics n = row_count; perform f_refresh_skor_internal();
-  elsif p_dataset = 'pra' then delete from pakai_pra where blth = p_blth; get diagnostics n = row_count; perform f_refresh_skor_internal();
+  elsif p_dataset = 'paska' then delete from pakai_paska where blth = p_blth; get diagnostics n = row_count;
+  elsif p_dataset = 'pra' then delete from pakai_pra where blth = p_blth; get diagnostics n = row_count;
   elsif p_dataset = 'ts' then delete from ts_bayar where blth_of(tgl_register) = p_blth; get diagnostics n = row_count;
   elsif p_dataset = 'dil' then delete from dil where true; get diagnostics n = row_count; delete from skor_dasar where true;
   else raise exception 'dataset tidak dikenal'; end if;
@@ -757,9 +769,9 @@ language plpgsql volatile security definer set search_path = public as $$
 begin
   if not can_upload() then raise exception 'Akses ditolak: hanya pengunggah'; end if;
   if p_dataset = 'pemeriksaan' then analyze pemeriksaan;
-  elsif p_dataset = 'dil' then analyze dil; perform f_refresh_skor();
-  elsif p_dataset = 'paska' then analyze pakai_paska; perform f_refresh_skor();
-  elsif p_dataset = 'pra' then analyze pakai_pra; perform f_refresh_skor();
+  elsif p_dataset = 'dil' then analyze dil;
+  elsif p_dataset = 'paska' then analyze pakai_paska;
+  elsif p_dataset = 'pra' then analyze pakai_pra;
   elsif p_dataset = 'ts' then analyze ts_bayar; end if;
 end $$;
 
@@ -769,7 +781,7 @@ declare f record;
 begin
   for f in select p.oid::regprocedure sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public' and p.proname in ('f_meta','f_ringkasan','f_kinerja','f_cakupan','f_cell','f_risiko','f_pembayaran',
-             'f_recovery','f_detail','f_usage_hist','f_datasets','f_clear_month','f_after_upload','f_log_delete','f_hapus_data','f_cari','f_sekitar','my_role','is_member','can_upload','is_admin')
+             'f_recovery','f_detail','f_usage_hist','f_datasets','f_clear_month','f_after_upload','f_log_delete','f_hapus_data','f_cari','f_sekitar','f_hitung_skor','my_role','is_member','can_upload','is_admin')
   loop
     execute format('revoke all on function %s from public, anon', f.sig);
     execute format('grant execute on function %s to authenticated', f.sig);

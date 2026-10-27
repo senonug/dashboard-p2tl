@@ -65,6 +65,11 @@ export async function dataPage(ctx) {
       try {
         const n = await ctx.rpc('f_hapus_data', { p_dataset: dsv, p_blth: b === 'semua' ? null : Number(b) }, { cache: false });
         m.textContent = `${num(n)} baris dihapus.`;
+        if (dsv === 'paska' || dsv === 'pra') {
+          m.textContent += ' Menghitung ulang skor risiko (±20 detik)…';
+          try { await ctx.rpc('f_hitung_skor', {}, { cache: false }); m.textContent = `${num(n)} baris dihapus. Skor risiko diperbarui.`; }
+          catch (er2) { m.textContent = `${num(n)} baris dihapus. Skor risiko gagal dihitung: ${er2.message}`; }
+        }
         await ctx.refresh(); dataPage(ctx);
       } catch (er) { m.textContent = er.message; }
     };
@@ -93,7 +98,7 @@ function startJob(ctx, file) {
     const m = e.data;
     if (m.type === 'progress') { job.phase = m.phase; job.done = m.done; job.total = m.total; updateJob(job); return; }
     if (m.type === 'parsed') { job.state = 'review'; job.info = m; }
-    if (m.type === 'applied') { job.state = 'done'; job.sent = m.sent; job.bytes = m.bytes; job.w.terminate(); ctx.refresh().then(() => { if (document.getElementById('jobs')) return dataPage(ctx); }).catch((er) => console.warn(er)); }
+    if (m.type === 'applied') { job.state = 'done'; job.sent = m.sent; job.bytes = m.bytes; job.skorErr = m.skorErr; job.w.terminate(); ctx.refresh().then(() => { if (document.getElementById('jobs')) return dataPage(ctx); }).catch((er) => console.warn(er)); }
     if (m.type === 'error') { job.state = 'error'; job.err = m.message; job.w.terminate(); }
     renderJobs(ctx);
   };
@@ -102,7 +107,7 @@ function startJob(ctx, file) {
   renderJobs(ctx);
 }
 
-const PH = { periksa: 'Memeriksa struktur file', baca: 'Membaca baris', kirim: 'Mengirim ke database', antri: 'Menyiapkan' };
+const PH = { periksa: 'Memeriksa struktur file', baca: 'Membaca baris', kirim: 'Mengirim ke database', skor: 'Menghitung ulang skor risiko (±20 detik)', antri: 'Menyiapkan' };
 function updateJob(job) {
   const el = document.querySelector(`[data-job="${job.id}"]`);
   if (!el) return;
@@ -121,7 +126,7 @@ function renderJobs(ctx) {
         ${j.state === 'sending' ? '<div><button class="btn sm" type="button" data-cancel>Batalkan pengiriman</button></div>' : ''}</div>`;
     }
     if (j.state === 'error') return `<div class="job" data-job="${j.id}">${head}<span class="chip crit">Gagal</span></div><div class="err">${esc(j.err)}</div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
-    if (j.state === 'done') return `<div class="job" data-job="${j.id}">${head}<span class="chip good">${icon(IC.check, 13)}Tersimpan</span></div><div class="sub" style="margin:0">${num(j.sent)} baris ${esc(DATASETS[j.info.ds].label)} tersimpan${j.bytes ? ` (data terkirim ${fmtSize(j.bytes)})` : ''}. Semua halaman dashboard sudah memakai data terbaru.</div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
+    if (j.state === 'done') return `<div class="job" data-job="${j.id}">${head}<span class="chip good">${icon(IC.check, 13)}Tersimpan</span></div><div class="sub" style="margin:0">${num(j.sent)} baris ${esc(DATASETS[j.info.ds].label)} tersimpan${j.bytes ? ` (data terkirim ${fmtSize(j.bytes)})` : ''}. Semua halaman dashboard sudah memakai data terbaru.${j.skorErr ? `<br><span class="err">Skor risiko belum terhitung (${esc(j.skorErr)}). Buka halaman Profil Risiko lalu klik "Hitung ulang skor".</span>` : ''}</div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
     if (j.state === 'cancelled') return `<div class="job" data-job="${j.id}">${head}<span class="chip">Dibatalkan</span></div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
     // review
     const m = j.info, st = m.stats, def = DATASETS[m.ds];

@@ -147,12 +147,18 @@ export async function applyRecords(parsed, cfg, onProgress = () => {}, signal) {
   };
   await Promise.all(Array.from({ length: conc }, worker));
   try { await rpc('f_after_upload', { p_dataset: parsed.ds }); } catch (e) { /* tidak fatal */ }
+  let skorErr = null;
+  if (['dil', 'paska', 'pra'].includes(parsed.ds)) {
+    onProgress('skor', 0, 1);
+    try { await rpc('f_hitung_skor', {}); } catch (e) { skorErr = e.message; }
+    onProgress('skor', 1, 1);
+  }
   const log = { dataset: parsed.ds, filename, periode: parsed.periode, n_rows: n,
     info: { rowsSeen: parsed.stats.rowsSeen, dup: parsed.stats.dup, skipped: parsed.stats.skipped, sheet: parsed.stats.sheet,
             sensitive_dropped: parsed.stats.sensitive, trx: parsed.stats.extra.trx || null, status: parsed.stats.status, kirim_kb: Math.round(bytes / 1024) } };
   const lr = await fetch(`${url}/rest/v1/upload_log`, { method: 'POST', headers: { ...H, Prefer: 'return=minimal' }, body: JSON.stringify(log), signal });
   if (!lr.ok) throw new Error('Gagal mencatat riwayat unggah: ' + (await lr.text()));
-  return { sent: n, bytes };
+  return { sent: n, bytes, skorErr };
 }
 
 export { DATASETS, REQUIRED };

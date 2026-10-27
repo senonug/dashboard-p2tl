@@ -406,7 +406,13 @@ const TERA_LBL = { 1: '≤2012', 2: '2013–16', 3: '2017–20', 4: '2021–23',
 async function risiko(ctx) {
   const d = await ctx.rpc('f_risiko', ctx.params({ p_kategori: rkKat || null, p_limit: 300 }));
   if (!ctx.alive()) return;
-  if (!d.blth) { ctx.el.innerHTML = '<div class="note warn">Belum ada data pemakaian (DPM paskabayar / OLAP prabayar). Unggah di halaman <a href="#/data">Kelola Data</a> agar profil risiko dapat dihitung.</div>'; return; }
+  const canUp = ['uploader', 'admin'].includes(ctx.me?.role);
+  const btnSkor = canUp ? '<button class="btn" type="button" id="hskor">Hitung ulang skor</button><span class="sub" id="hskm" style="margin-left:8px"></span>' : '';
+  const bindSkor = () => { const bt = ctx.el.querySelector('#hskor'); if (!bt) return; bt.onclick = async () => {
+    bt.disabled = true; const m = ctx.el.querySelector('#hskm'); m.textContent = 'Menghitung (±20 detik)…';
+    try { const n = await ctx.rpc('f_hitung_skor', {}, { cache: false }); await ctx.refresh(); m.textContent = `${num(n)} pelanggan berskor.`; risiko(ctx); }
+    catch (e) { m.textContent = 'Gagal: ' + e.message; bt.disabled = false; } }; };
+  if (!d.blth) { ctx.el.innerHTML = `<div class="note warn">Skor risiko belum tersedia. Pastikan DIL dan data pemakaian (DPM paskabayar / OLAP prabayar) sudah diunggah di <a href="#/data">Kelola Data</a>, lalu hitung skornya. ${btnSkor}</div>`; bindSkor(); return; }
   const mk = d.merk_hit.filter((m) => !/pilih|lain/i.test(m.k || ''));
   const blank = d.merk_hit.filter((m) => /pilih|lain/i.test(m.k || ''));
   const jn1 = d.jn_hit.find((r) => r.o === 1);
@@ -446,6 +452,7 @@ async function risiko(ctx) {
       { h: '', k: 'lat', f: (v, r) => (r.lat ? `<a href="${gmaps(r.lat, r.lon)}" target="_blank" rel="noopener" aria-label="Lokasi di Google Maps">${icon(IC.pin, 15)}</a>` : '') }], d.list, { maxh: 560 }));
   ctx.el.innerHTML = sig + pool + `<div class="two">${wc}${card('Cara membaca', null, `<ul class="ins"><li>Skor dihitung untuk <b>pelanggan aktif di DIL</b> memakai pemakaian bulan ${blthLabel(d.blth)}${d.has_pra ? '' : ' (data prabayar bulan ini belum ada)'}${d.has_pas ? '' : ' (data paskabayar bulan ini belum ada)'}.</li><li>Sinyal "turun ≥50%" baru aktif bila sudah ada data 3 bulan sebelumnya.</li><li>Bobot awal ini bisa dikalibrasi ulang setelah beberapa bulan, dengan membandingkan skor dengan hit rate aktual di halaman ini.</li><li>Pelanggan yang tidak membeli token bisa juga berarti rumah kosong. Pastikan di lapangan.</li></ul>`)}</div>` + lc;
   ctx.el.querySelector('#rk').onchange = (e) => { rkKat = e.target.value; risiko(ctx); };
+  if (canUp) { const w = ctx.el.querySelector('#rkx'); if (w) { w.insertAdjacentHTML('beforebegin', btnSkor); bindSkor(); } }
   ctx.el.querySelector('#rkx').onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = 'Menyiapkan…';
     try {
