@@ -290,7 +290,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 
 /* Cetak Ringkasan Eksekutif: A4 portrait, satu halaman */
 @media print {
-  @page { size: A4 portrait; margin: 9mm 9mm 10mm; }
+  @page { size: A4 landscape; margin: 8mm 9mm; }
   html, body { background: #fff; font-size: 12px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .main > header, .note:not(.warn), [data-print="hide"], #tip { display: none !important; }
   .main { gap: 8px; }
@@ -318,3 +318,73 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .chip { font-size: 9px; padding: 1px 6px; }
   a { color: inherit; text-decoration: none; }
 }
+
+/* ---------- Ringkasan Eksekutif v1.7: komposisi, rapor bulanan, detail periode ---------- */
+.exec-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.exec-chips .chip { font-size: 12px; padding: 4px 10px; }
+.exec-cbar > div:first-child { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 700; color: var(--muted); margin-bottom: 6px; }
+.exec-cbar b { color: var(--ink); font-weight: 600; }
+.exec-cbar .stack { border-radius: 6px; overflow: hidden; }
+.exec-cleg { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+.exec-cleg > div { border-top: 3px solid; padding-top: 6px; display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; }
+.exec-cleg b { font-size: 13px; }
+.rapor-scroll { overflow-x: auto; }
+.rapor { min-width: 1260px; display: flex; flex-direction: column; }
+.rapor .rr { display: grid; grid-template-columns: 170px repeat(12, minmax(0, 1fr)) 104px; gap: 0 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line2); font-size: 12px; }
+.rapor .rr > span { text-align: right; font-family: var(--mono); font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rapor .rr > .rl { text-align: left; font-family: var(--font); font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 7px; white-space: normal; line-height: 1.3; }
+.rapor .rr > .rt { font-weight: 700; }
+.rapor .rh { background: #FAFBFC; }
+.rapor .rh > span { font-family: var(--font) !important; font-weight: 700; color: var(--muted); font-size: 11.5px !important; }
+.rapor .rsec { padding: 12px 0 6px; font-size: 11.5px; font-weight: 800; letter-spacing: .04em; color: var(--pri-d); border-bottom: 1px solid #C9CDD4; }
+.rapor .tot { background: #FAFBFC; } .rapor .tot > span { font-weight: 700; }
+.rapor .mut > span { color: var(--muted); }
+.rapor span.b { font-weight: 700; }
+.pos { color: var(--good); } .neg { color: var(--crit); }
+.rapor span.hl > *, .rapor span.hl { color: var(--warn); font-weight: 700; }
+.rapor .rr > span.sel { background: rgba(28,92,171,.08); border-radius: 3px; }
+.rapor .rr > span.fut { color: #9AA3B2; }
+.rapor .rchart { height: calc(var(--h, 230px) + 14px); padding: 14px 0 0; align-items: end; border-bottom: 1px solid #C9CDD4; }
+.rchart .ry { position: relative; height: 100%; font-size: 10.5px; color: var(--muted); font-family: var(--mono); }
+.rchart .ry span { position: absolute; right: 10px; transform: translateY(50%); white-space: nowrap; }
+.rc { position: relative; height: 100%; }
+.rc.sel { background: rgba(28,92,171,.07); box-shadow: inset 0 0 0 1.5px #86b6ef; border-radius: 4px; }
+.rc .rg { position: absolute; left: 6%; right: 6%; bottom: 0; background: #E9EDF2; border-top: 2px solid #465063; border-radius: 3px 3px 0 0; box-sizing: border-box; }
+.rc.fut .rg { opacity: .55; }
+.rc.fut { opacity: .6; }
+.rc .rs { position: absolute; left: 24%; right: 24%; bottom: 0; display: flex; flex-direction: column; justify-content: flex-end; }
+.rc .rs i { display: block; } .rc .rs i + i { border-top: 1.5px solid #fff; }
+.rc.cur .rs { opacity: .55; }
+.rc .rp { position: absolute; left: 50%; transform: translateX(-50%); font-size: 10.5px; padding: 1px 6px; font-family: var(--mono); }
+.rsum { height: 100%; display: flex; flex-direction: column; justify-content: flex-end; text-align: right; font-size: 11px; color: var(--muted); gap: 2px; padding-bottom: 6px; }
+.rsum b { color: var(--ink); font-size: 12.5px; }
+.legend i.tg-sw { width: 18px; height: 12px; background: #E9EDF2; border-top: 2px solid #465063; border-radius: 3px 3px 0 0; box-sizing: border-box; display: inline-block; }
+.per-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 22px; }
+.per-side { border-left: 1px solid var(--line); padding-left: 20px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.rapor.per { min-width: 0; }
+.per-tbl { overflow-x: auto; margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; }
+.per-tbl .rapor.per { min-width: 620px; }
+@media (min-width: 1600px) { .rapor .rr > span { font-size: 12.5px; } .rapor .rr > .rl { font-size: 13px; } }
+@media (max-width: 900px) { .per-grid { grid-template-columns: 1fr; } .per-side { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 12px; } }
+@media print {
+  [data-print="rapor"] { break-before: page; order: 10; padding: 8px 10px; }
+  [data-print="notes"] { order: 5; break-inside: auto !important; }
+  .exec-charts svg { max-height: 128px; }
+  .exec-cap { padding-top: 7px; padding-bottom: 7px; } .exec-grid { gap: 6px 18px; } .exec-hero > b { font-size: 26px !important; }
+  [data-print="notes"] ul.ins { font-size: 9px; line-height: 1.35; }
+  [data-print="comp"] { gap: 5px; }
+  .rapor-scroll { overflow: visible; }
+  .rapor { min-width: 0; }
+  .rapor .rr { grid-template-columns: 118px repeat(12, minmax(0, 1fr)) 74px; gap: 0 6px; padding: 3px 0; }
+  .rapor .rr > span { font-size: 9.5px; } .rapor .rr > .rl { font-size: 9.5px; }
+  .rapor .rh > span { font-size: 9.5px !important; }
+  .rapor .rsec { font-size: 9.5px; padding: 6px 0 3px; }
+  .rapor .rchart { height: 236px; padding-top: 24px; }
+  .rc .rp { font-size: 8.5px; padding: 0 4px; }
+  .rchart .ry span, .rsum { font-size: 9px; }
+  .exec-rapor .sub { font-size: 9px; }
+  .exec-chips .chip { font-size: 9px; padding: 1px 6px; }
+  .exec-cleg > div { font-size: 9px; } .exec-cleg b { font-size: 10px; }
+  .exec-cbar > div:first-child { font-size: 9.5px; margin-bottom: 3px; } .exec-cbar .stack i { height: 13px !important; }
+}
+.exec-per .legend { margin-top: 10px; }

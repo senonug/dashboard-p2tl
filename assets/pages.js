@@ -1,5 +1,5 @@
 import { cakupan } from './peta.js';
-import { hitungCapaian, capaianCard, bulananCard, bayarCard, capaianNote, printHead } from './eksekutif.js';
+import { hitungCapaian, capaianCard, kumulatifCard, komposisiCard, raporCard, periodeCard, bindPeriode, capaianNotes, printHead } from './eksekutif.js';
 import { C, GOLC, GOL_ORDER, GOL_DESC, RAMP, esc, num, pct, rp, ratio, kpi, delta, card, grid, legend, empty, hbars, vbars, vstack, stack, table,
   golChip, lineChart, icon, IC, tglPendek, rentang, blthLabel, title, exportXlsx, jam } from './ui.js';
 
@@ -64,7 +64,6 @@ function golTsCard(d, ctx) {
 }
 
 // ======================= RINGKASAN =======================
-let trendView = 'kwh';
 async function ringkasan(ctx) {
   const [d, cap] = await Promise.all([
     ctx.rpc('f_ringkasan', ctx.params(ctx.cmp ? { p_cmp_from: ctx.cmp[0], p_cmp_to: ctx.cmp[1] } : {})),
@@ -72,7 +71,7 @@ async function ringkasan(ctx) {
   ]);
   if (!ctx.alive()) return;
   const k = d.kpi, c = d.cmp;
-  const o = cap.err ? null : hitungCapaian(cap, ctx.f.to);
+  const o = cap.err ? null : hitungCapaian(cap, ctx.f.from, ctx.f.to);
   const hit = ratio(k.t, k.n), chit = c ? ratio(c.t, c.n) : null;
   const cmpTxt = ctx.cmp ? `<div class="note">Dibandingkan dengan ${rentang(ctx.cmp[0], ctx.cmp[1])}.</div>` : '';
   const ts = d.ts || {};
@@ -86,42 +85,15 @@ async function ringkasan(ctx) {
     kpi('TS TERBAYAR (LAPORAN TS)', ts.n ? rp(ts.total) : '–', ts.n ? `${num(ts.n)} pelanggan · Rp TS ${rp(ts.rp_ts)}` : 'Tidak ada laporan TS pada periode ini', C.s4, tc ? delta(+ts.total || 0, +tc.total || 0) : ''),
     kpi('CAKUPAN PELANGGAN AKTIF', pct(ratio(k.uniq, k.aktif), 2), `${num(k.uniq)} dari ${num(k.aktif)} pelanggan`, C.s7, c ? delta(ratio(k.uniq, k.aktif), ratio(c.uniq, k.aktif), 'up', 'pp') : ''),
   ].join(''), 160);
+  // pemeriksaan & temuan per hari (dipakai tab Detail periode dan deteksi lonjakan)
   const b = bucketDaily(d.daily, ctx.f.from, ctx.f.to);
   const med = median(b.rows.map((r) => r.t));
   const spikes = b.rows.filter((r) => r.t >= 10 && r.t > 3 * Math.max(med, 1));
-  const unit = { hari: 'per hari', minggu: 'per minggu', bulan: 'per bulan' }[b.mode];
-  // data TS terbayar per periode & golongan
-  const tsMap = new Map();
-  for (const x of d.ts_daily || []) {
-    const kk = bucketKey(x.tgl, b.mode);
-    const cur = tsMap.get(kk) || { k: kk, kwh: {}, rp: {} };
-    cur.kwh[x.gol] = (cur.kwh[x.gol] || 0) + (+x.kwh || 0);
-    cur.rp[x.gol] = (cur.rp[x.gol] || 0) + (+x.rp || 0);
-    tsMap.set(kk, cur);
-  }
-  const tsRows = [...tsMap.values()].sort((a, c2) => (a.k < c2.k ? -1 : 1));
-  const tsKeys = GOL_ORDER.slice().reverse().filter((g) => tsRows.some((r) => r.kwh[g] || r.rp[g]));
-  const tabs = [['periksa', 'Pemeriksaan & temuan'], ['kwh', 'kWh TS terbayar'], ['rp', 'Rp TS terbayar']];
-  let body;
-  if (trendView === 'periksa') {
-    body = `<div class="two"><div><div class="lbl" style="margin-bottom:6px">Pemeriksaan</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.n, tip: `${r.k}: ${num(r.n)} pemeriksaan` })), { every: 'auto' })}</div>
-     <div><div class="lbl" style="margin-bottom:6px">Temuan</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.t, c: spikes.includes(r) ? C.hl : C.s2, tip: `${r.k}: ${num(r.t)} temuan` })), { color: C.s2, every: 'auto' })}</div></div>
-     ${spikes.length ? `<div class="note"><b>Lonjakan temuan:</b> ${spikes.slice(0, 4).map((x) => `${b.mode === 'bulan' ? blthLabel(+x.k.replace('-', '')) : tglPendek(x.k)} (${num(x.t)} temuan)`).join('; ')}. Batang berwarna gelap = lebih dari 3× median.</div>` : ''}`;
-  } else {
-    const isK = trendView === 'kwh';
-    const fmt = isK ? (v) => num(v) : (v) => rp(v);
-    const tot = sumBy(d.gol_ts || [], isK ? 'kwh' : 'rp');
-    body = tsRows.length ? `<div class="lbl" style="margin-bottom:6px">${isK ? 'kWh' : 'Rp TS'} terbayar per golongan · total ${fmt(tot)}</div>` +
-      vstack(tsRows.map((r) => ({ l: bucketLabel(r.k, b.mode), parts: isK ? r.kwh : r.rp, tip: b.mode === 'bulan' ? blthLabel(+r.k.replace('-', '')) : tglPendek(r.k) })), tsKeys, GOLC, { fmt, every: 'auto', h: 170 }) +
-      legend(GOL_ORDER.filter((g) => tsKeys.includes(g)).map((g) => [g, GOLC[g]])) +
-      '<p class="sub">Sumber: Laporan TS terbayar menurut tanggal register. Golongan "KWH" digabung ke K2; DKRP dan UPDATEANGSURAN tidak ditampilkan.</p>'
-      : empty(d.ts?.min ? `Tidak ada Laporan TS terbayar pada periode ini.<br>Data tersedia ${rentang(d.ts.min, d.ts.max)}.` : 'Belum ada Laporan TS terbayar.');
-  }
-  const trend = card('Tren ' + unit + ' (periode terpilih)', null, `<div class="seg" role="tablist">${tabs.map(([kk, t]) => `<button type="button" role="tab" aria-selected="${trendView === kk}" data-tv="${kk}" class="${trendView === kk ? 'on' : ''}">${t}</button>`).join('')}</div>${body}`, 'data-print="hide"');
-  const comp = golTsCard(d, ctx).replace('<section class="card"', '<section class="card" data-print="comp"');
-  const lay = Object.fromEntries(d.layanan.map((l) => [l.k, l]));
+  const periksaHtml = b.rows.length ? `<div class="two"><div><div class="lbl" style="margin-bottom:6px">Pemeriksaan per hari</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.n, tip: `${tglPendek(r.k)}: ${num(r.n)} pemeriksaan` })), { every: 'auto' })}</div>
+     <div><div class="lbl" style="margin-bottom:6px">Temuan per hari</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.t, c: spikes.includes(r) ? C.hl : C.s2, tip: `${tglPendek(r.k)}: ${num(r.t)} temuan` })), { color: C.s2, every: 'auto' })}</div></div>
+     ${spikes.length ? `<div class="note"><b>Lonjakan temuan:</b> ${spikes.slice(0, 4).map((x) => `${tglPendek(x.k)} (${num(x.t)} temuan)`).join('; ')}. Batang berwarna gelap = lebih dari 3× median.</div>` : ''}` : empty('Tidak ada pemeriksaan pada periode ini');
   const ins = [];
-  if (o) ins.push(capaianNote(o));
+  if (o) ins.push(...capaianNotes(o));
   const today = new Date(); const curM = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
   if (ctx.f.to >= curM + '-01') ins.push(`Laporan TS bulan berjalan masih bertambah karena temuan baru tercatat setelah register; angka kWh dan Rp TS bulan ini bersifat <b>sementara</b>.`);
   if (spikes.length && b.mode === 'hari') ins.push(`Lonjakan temuan pada ${spikes.slice(0, 3).map((x) => `${tglPendek(x.k)} (${num(x.t)})`).join(', ')}, lebih dari 3× median harian. Periksa apakah ini input yang menumpuk sebelum ditafsirkan sebagai hasil lapangan.`);
@@ -129,18 +101,20 @@ async function ringkasan(ctx) {
   if (gts.length) {
     const tot = sumBy(gts, 'rp');
     const top = gts[0];
-    ins.push(`Menurut Laporan TS terbayar, <b>${esc(top.gol)}</b> (${esc(GOL_DESC[top.gol] || '')}) menyumbang <b>${pct(ratio(top.rp, tot), 0)}</b> nilai Rp TS dari ${num(top.n)} pelanggan.`);
+    ins.push(`Pada periode ini, <b>${esc(top.gol)}</b> menyumbang <b>${pct(ratio(top.rp, tot), 0)}</b> nilai Rp TS terbayar dari ${num(top.n)} pelanggan.`);
     const perCase = [...gts].sort((a, b2) => b2.rp / b2.n - a.rp / a.n)[0];
     if (perCase.gol !== top.gol) ins.push(`Nilai per pelanggan tertinggi: <b>${esc(perCase.gol)}</b>, ${rp(perCase.rp / perCase.n)} per pelanggan.`);
   }
   if (k.anomali) ins.push(`<b>${num(k.anomali)}</b> baris pemeriksaan bernilai TS tidak wajar sehingga tidak dihitung. Perbaiki di file sumber lalu unggah ulang file bulan tersebut; baris dengan ID_P2TL sama akan diperbarui.`);
   ins.push(`Cakupan <b>${pct(ratio(k.uniq, k.aktif), 2)}</b> pelanggan aktif pada periode ini. Lihat <a href="#/risiko">Profil Risiko</a> untuk menajamkan target operasi.`);
   if (c) ins.push(`Dibanding periode pembanding: pemeriksaan ${delta(k.n, c.n)}, temuan ${delta(k.t, c.t)}, nilai TS ${delta(k.rp, c.rp)}.`);
-  const capHtml = o ? capaianCard(o) : `<div class="note warn">Blok capaian target belum tersedia (${esc(cap.err)}). Jalankan file <b>supabase/update-v1.6.sql</b> di Supabase SQL Editor.</div>`;
-  ctx.el.innerHTML = printHead(ctx, ctx.CONFIG.unit) + cmpTxt + anom + capHtml + kp + (o ? bulananCard(o) : '') + `<div class="two">${comp}${bayarCard(d)}</div>` + trend +
-    card('Catatan analis (otomatis)', null, `<ul class="ins">${ins.map((x) => `<li>${x}</li>`).join('')}</ul>`, 'data-print="notes"');
+  const capHtml = o ? capaianCard(o) : `<div class="note warn">Blok capaian target belum tersedia (${esc(cap.err)}). Jalankan file <b>supabase/update-v1.6.sql</b> dan <b>update-v1.7.sql</b> di Supabase SQL Editor.</div>`;
+  const notes = card('Catatan analis (otomatis)', null, `<ul class="ins">${ins.map((x) => `<li>${x}</li>`).join('')}</ul>`, 'data-print="notes"');
+  ctx.el.innerHTML = printHead(ctx, ctx.CONFIG.unit) + cmpTxt + anom + capHtml + kp +
+    `<div class="two">${o ? kumulatifCard(o) : ''}${komposisiCard(d, ctx)}</div>` +
+    (o ? raporCard(o) : '') + periodeCard(d, o, ctx, periksaHtml) + notes;
   const ga = ctx.el.querySelector('#goanom'); if (ga) ga.onclick = () => { DQ.ap2t = 'ANOMALI'; DQ.page = 0; };
-  ctx.el.querySelectorAll('[data-tv]').forEach((bt) => bt.onclick = () => { trendView = bt.dataset.tv; ringkasan(ctx); });
+  bindPeriode(ctx.el);
 }
 
 // ======================= TEMUAN =======================
