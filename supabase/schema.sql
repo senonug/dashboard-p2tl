@@ -848,13 +848,63 @@ begin
   elsif p_dataset = 'ts' then analyze ts_bayar; end if;
 end $$;
 
+-- ---------- Target tahunan & capaian (v1.6) ----------
+create table if not exists target_p2tl (
+  tahun      integer primary key,
+  kwh        numeric not null check (kwh > 0),
+  updated_at timestamptz default now(),
+  updated_by text
+);
+alter table target_p2tl enable row level security;  -- hanya lewat fungsi
+insert into target_p2tl (tahun, kwh, updated_by) values (2026, 11500820, 'awal (v1.6)')
+  on conflict (tahun) do nothing;
+
+-- Realisasi kWh TS terbayar (Laporan TS, tanggal register) tahun dari p_to, s.d. p_to
+create or replace function f_capaian(p_to date) returns json
+language plpgsql stable security definer set search_path = public as $$
+declare r json; v_th int := extract(year from p_to)::int; v_awal date;
+begin
+  perform guard();
+  v_awal := make_date(v_th, 1, 1);
+  select json_build_object(
+    'tahun', v_th,
+    'target', (select kwh from target_p2tl where tahun = v_th),
+    'data_max', (select max(tgl_register) from ts_bayar where gol_ts is not null and tgl_register between v_awal and p_to),
+    'kwh', (select coalesce(sum(kwh), 0) from ts_bayar where gol_ts is not null and tgl_register between v_awal and p_to),
+    'rp', (select coalesce(sum(total_p2tl), 0) from ts_bayar where gol_ts is not null and tgl_register between v_awal and p_to),
+    'n', (select count(*) from ts_bayar where gol_ts is not null and tgl_register between v_awal and p_to),
+    'bulan', (select coalesce(json_agg(x order by x.b, x.gol), '[]') from (
+        select extract(month from tgl_register)::int b, gol_ts gol, count(*) n, coalesce(sum(kwh), 0) kwh, coalesce(sum(total_p2tl), 0) rp
+        from ts_bayar where gol_ts is not null and tgl_register between v_awal and p_to group by 1, 2) x)
+  ) into r;
+  return r;
+end $$;
+
+create or replace function f_target_list() returns json
+language plpgsql stable security definer set search_path = public as $$
+begin
+  perform guard();
+  return (select coalesce(json_agg(x order by x.tahun desc), '[]') from (select tahun, kwh, updated_at, updated_by from target_p2tl) x);
+end $$;
+
+create or replace function f_set_target(p_tahun int, p_kwh numeric) returns void
+language plpgsql volatile security definer set search_path = public as $$
+begin
+  if not is_admin() then raise exception 'Akses ditolak: hanya admin'; end if;
+  if p_tahun < 2020 or p_tahun > 2100 then raise exception 'Tahun tidak valid'; end if;
+  if p_kwh is null then delete from target_p2tl where tahun = p_tahun; return; end if;
+  if p_kwh <= 0 then raise exception 'Target harus lebih dari 0'; end if;
+  insert into target_p2tl (tahun, kwh, updated_at, updated_by) values (p_tahun, p_kwh, now(), me_email())
+    on conflict (tahun) do update set kwh = excluded.kwh, updated_at = now(), updated_by = excluded.updated_by;
+end $$;
+
 -- Hak eksekusi fungsi hanya untuk pengguna login
 do $$
 declare f record;
 begin
   for f in select p.oid::regprocedure sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public' and p.proname in ('f_meta','f_ringkasan','f_kinerja','f_cakupan','f_cell','f_peta_risiko','f_risiko','f_pembayaran',
-             'f_recovery','f_detail','f_usage_hist','f_datasets','f_clear_month','f_after_upload','f_log_delete','f_hapus_data','f_cari','f_sekitar','f_hitung_skor','my_role','is_member','can_upload','is_admin')
+             'f_recovery','f_detail','f_usage_hist','f_datasets','f_clear_month','f_after_upload','f_log_delete','f_hapus_data','f_cari','f_sekitar','f_hitung_skor','f_capaian','f_target_list','f_set_target','my_role','is_member','can_upload','is_admin')
   loop
     execute format('revoke all on function %s from public, anon', f.sig);
     execute format('grant execute on function %s to authenticated', f.sig);

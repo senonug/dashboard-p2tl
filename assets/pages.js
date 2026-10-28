@@ -1,4 +1,5 @@
 import { cakupan } from './peta.js';
+import { hitungCapaian, capaianCard, bulananCard, bayarCard, capaianNote, printHead } from './eksekutif.js';
 import { C, GOLC, GOL_ORDER, GOL_DESC, RAMP, esc, num, pct, rp, ratio, kpi, delta, card, grid, legend, empty, hbars, vbars, vstack, stack, table,
   golChip, lineChart, icon, IC, tglPendek, rentang, blthLabel, title, exportXlsx, jam } from './ui.js';
 
@@ -65,21 +66,26 @@ function golTsCard(d, ctx) {
 // ======================= RINGKASAN =======================
 let trendView = 'kwh';
 async function ringkasan(ctx) {
-  const d = await ctx.rpc('f_ringkasan', ctx.params(ctx.cmp ? { p_cmp_from: ctx.cmp[0], p_cmp_to: ctx.cmp[1] } : {}));
+  const [d, cap] = await Promise.all([
+    ctx.rpc('f_ringkasan', ctx.params(ctx.cmp ? { p_cmp_from: ctx.cmp[0], p_cmp_to: ctx.cmp[1] } : {})),
+    ctx.rpc('f_capaian', { p_to: ctx.f.to }).catch((e) => ({ err: e.message })),
+  ]);
   if (!ctx.alive()) return;
   const k = d.kpi, c = d.cmp;
+  const o = cap.err ? null : hitungCapaian(cap, ctx.f.to);
   const hit = ratio(k.t, k.n), chit = c ? ratio(c.t, c.n) : null;
   const cmpTxt = ctx.cmp ? `<div class="note">Dibandingkan dengan ${rentang(ctx.cmp[0], ctx.cmp[1])}.</div>` : '';
   const ts = d.ts || {};
   const anom = k.anomali ? `<div class="note warn"><b>${num(k.anomali)} temuan bernilai TS tidak wajar</b> (total ${num(k.kwh_anomali)} kWh · ${rp(k.rp_anomali)}) dikeluarkan dari perhitungan kWh dan Rp. Nilainya melebihi batas wajar (kWh > 20.000 jam × kVA atau Rp > Rp60.000 per VA), kemungkinan salah input atau format angka di file sumber. <a href="#/detail" id="goanom">Lihat daftarnya</a>.</div>` : '';
+  const tc = ctx.cmp ? (d.ts_cmp || {}) : null;
   const kp = grid([
+    kpi('kWh TS TERBAYAR', ts.n ? num(ts.kwh) : '–', ts.n ? `${num(ts.n)} pelanggan (P1–P4, K1–K2)` : 'Tidak ada laporan TS pada periode ini', C.s6, tc ? delta(+ts.kwh || 0, +tc.kwh || 0) : ''),
     kpi('PELANGGAN DIPERIKSA', num(k.n), `${num(k.hari)} hari kerja · ${num(k.hari ? k.n / k.hari : 0)}/hari`, C.s1, c ? delta(k.n, c.n) : ''),
     kpi('TEMUAN', num(k.t), `Hit rate <b class="mono">${pct(hit)}</b>`, C.s2, c ? delta(hit, chit, 'up', 'pp') : ''),
     kpi('POTENSI TS (HASIL PERIKSA)', rp(k.rp), `${num(k.kwh)} kWh${k.anomali ? ` · ${num(k.anomali)} nilai tidak wajar dikecualikan` : ''}`, C.s3, c ? delta(k.rp, c.rp) : ''),
-    kpi('TS TERBAYAR (LAPORAN TS)', ts.n ? rp(ts.total) : '–', ts.n ? `${num(ts.n)} pelanggan · ${num(sumBy((d.gol_ts || []).filter((r) => /^[PK]\d$/.test(r.gol || '')), 'kwh'))} kWh (P1–P4, K1–K2)` : 'Tidak ada laporan TS pada periode ini', C.s4),
-    kpi('CAKUPAN PELANGGAN AKTIF', pct(ratio(k.uniq, k.aktif), 2), `${num(k.uniq)} dari ${num(k.aktif)} pelanggan`, C.s7),
-    kpi('BONGKAR / PUTUS', `${num(k.bongkar)} / ${num(k.putus)}`, `AP2T: ${num(k.ap2t)} (${pct(ratio(k.ap2t, k.t), 0)} dari temuan)`),
-  ].join(''), 175);
+    kpi('TS TERBAYAR (LAPORAN TS)', ts.n ? rp(ts.total) : '–', ts.n ? `${num(ts.n)} pelanggan · Rp TS ${rp(ts.rp_ts)}` : 'Tidak ada laporan TS pada periode ini', C.s4, tc ? delta(+ts.total || 0, +tc.total || 0) : ''),
+    kpi('CAKUPAN PELANGGAN AKTIF', pct(ratio(k.uniq, k.aktif), 2), `${num(k.uniq)} dari ${num(k.aktif)} pelanggan`, C.s7, c ? delta(ratio(k.uniq, k.aktif), ratio(c.uniq, k.aktif), 'up', 'pp') : ''),
+  ].join(''), 160);
   const b = bucketDaily(d.daily, ctx.f.from, ctx.f.to);
   const med = median(b.rows.map((r) => r.t));
   const spikes = b.rows.filter((r) => r.t >= 10 && r.t > 3 * Math.max(med, 1));
@@ -111,10 +117,14 @@ async function ringkasan(ctx) {
       '<p class="sub">Sumber: Laporan TS terbayar menurut tanggal register. Golongan "KWH" digabung ke K2; DKRP dan UPDATEANGSURAN tidak ditampilkan.</p>'
       : empty(d.ts?.min ? `Tidak ada Laporan TS terbayar pada periode ini.<br>Data tersedia ${rentang(d.ts.min, d.ts.max)}.` : 'Belum ada Laporan TS terbayar.');
   }
-  const trend = card('Tren ' + unit, null, `<div class="seg" role="tablist">${tabs.map(([kk, t]) => `<button type="button" role="tab" aria-selected="${trendView === kk}" data-tv="${kk}" class="${trendView === kk ? 'on' : ''}">${t}</button>`).join('')}</div>${body}`);
-  const comp = golTsCard(d, ctx);
+  const trend = card('Tren ' + unit + ' (periode terpilih)', null, `<div class="seg" role="tablist">${tabs.map(([kk, t]) => `<button type="button" role="tab" aria-selected="${trendView === kk}" data-tv="${kk}" class="${trendView === kk ? 'on' : ''}">${t}</button>`).join('')}</div>${body}`, 'data-print="hide"');
+  const comp = golTsCard(d, ctx).replace('<section class="card"', '<section class="card" data-print="comp"');
   const lay = Object.fromEntries(d.layanan.map((l) => [l.k, l]));
   const ins = [];
+  if (o) ins.push(capaianNote(o));
+  const today = new Date(); const curM = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+  if (ctx.f.to >= curM + '-01') ins.push(`Laporan TS bulan berjalan masih bertambah karena temuan baru tercatat setelah register; angka kWh dan Rp TS bulan ini bersifat <b>sementara</b>.`);
+  if (spikes.length && b.mode === 'hari') ins.push(`Lonjakan temuan pada ${spikes.slice(0, 3).map((x) => `${tglPendek(x.k)} (${num(x.t)})`).join(', ')}, lebih dari 3× median harian. Periksa apakah ini input yang menumpuk sebelum ditafsirkan sebagai hasil lapangan.`);
   const gts = (d.gol_ts || []).filter((g) => /^[PK]\d$/.test(g.gol || ''));
   if (gts.length) {
     const tot = sumBy(gts, 'rp');
@@ -126,7 +136,9 @@ async function ringkasan(ctx) {
   if (k.anomali) ins.push(`<b>${num(k.anomali)}</b> baris pemeriksaan bernilai TS tidak wajar sehingga tidak dihitung. Perbaiki di file sumber lalu unggah ulang file bulan tersebut; baris dengan ID_P2TL sama akan diperbarui.`);
   ins.push(`Cakupan <b>${pct(ratio(k.uniq, k.aktif), 2)}</b> pelanggan aktif pada periode ini. Lihat <a href="#/risiko">Profil Risiko</a> untuk menajamkan target operasi.`);
   if (c) ins.push(`Dibanding periode pembanding: pemeriksaan ${delta(k.n, c.n)}, temuan ${delta(k.t, c.t)}, nilai TS ${delta(k.rp, c.rp)}.`);
-  ctx.el.innerHTML = cmpTxt + anom + kp + `<div class="two">${trend}${comp}</div>` + card('Catatan analis (otomatis)', null, `<ul class="ins">${ins.map((x) => `<li>${x}</li>`).join('')}</ul>`);
+  const capHtml = o ? capaianCard(o) : `<div class="note warn">Blok capaian target belum tersedia (${esc(cap.err)}). Jalankan file <b>supabase/update-v1.6.sql</b> di Supabase SQL Editor.</div>`;
+  ctx.el.innerHTML = printHead(ctx, ctx.CONFIG.unit) + cmpTxt + anom + capHtml + kp + (o ? bulananCard(o) : '') + `<div class="two">${comp}${bayarCard(d)}</div>` + trend +
+    card('Catatan analis (otomatis)', null, `<ul class="ins">${ins.map((x) => `<li>${x}</li>`).join('')}</ul>`, 'data-print="notes"');
   const ga = ctx.el.querySelector('#goanom'); if (ga) ga.onclick = () => { DQ.ap2t = 'ANOMALI'; DQ.page = 0; };
   ctx.el.querySelectorAll('[data-tv]').forEach((bt) => bt.onclick = () => { trendView = bt.dataset.tv; ringkasan(ctx); });
 }

@@ -5,6 +5,35 @@ const DB_LIMIT = 500 * 1024 * 1024;
 const fmtSize = (b) => (b >= 1e9 ? num(b / 1e9, 2) + ' GB' : b >= 1e6 ? num(b / 1e6, 1) + ' MB' : num(b / 1e3) + ' KB');
 const jobs = [];
 
+// Target tahunan kWh TS terbayar (dipakai Ringkasan Eksekutif)
+async function targetCard(ctx, isAdmin) {
+  const box = ctx.el.querySelector('#tgt'); if (!box) return;
+  let list;
+  try { list = await ctx.rpc('f_target_list', {}, { cache: false }); }
+  catch (e) { box.innerHTML = `<div class="note warn">Pengaturan target belum tersedia (${esc(e.message)}). Jalankan <b>supabase/update-v1.6.sql</b> di Supabase SQL Editor.</div>`; return; }
+  if (!box.isConnected) return;
+  const th = new Date().getFullYear();
+  box.innerHTML = card('Target kWh TS terbayar per tahun', 'Dipakai blok capaian di Ringkasan Eksekutif. Target dibagi rata per hari (target ÷ jumlah hari dalam setahun).',
+    (list.length ? table([{ h: 'Tahun', k: 'tahun' }, { h: 'Target (kWh)', k: 'kwh', r: 1, f: num }, { h: 'Per hari (kWh)', k: 'x', r: 1, f: (v, r) => num(r.kwh / (((r.tahun % 4 === 0 && r.tahun % 100 !== 0) || r.tahun % 400 === 0) ? 366 : 365)) },
+      { h: 'Diubah', k: 'updated_at', f: (v, r) => `${v ? tglPendek(v) : '–'} <small style="color:var(--muted)">${esc(r.updated_by || '')}</small>` }], list) : empty('Belum ada target'))
+    + (isAdmin ? `<form id="tgf" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
+      <div class="fld"><label for="tgy">TAHUN</label><input id="tgy" type="number" min="2020" max="2100" value="${th}" style="min-width:110px"></div>
+      <div class="fld"><label for="tgk">TARGET (kWh)</label><input id="tgk" inputmode="numeric" placeholder="mis. 11.500.820" value="${list.find((x) => x.tahun === th) ? num(list.find((x) => x.tahun === th).kwh) : ''}"></div>
+      <button class="btn pri" type="submit">Simpan target</button><span class="sub" id="tgm" style="margin:0"></span></form>` : '<p class="sub">Hanya admin yang dapat mengubah target.</p>'));
+  const f = box.querySelector('#tgf'); if (!f) return;
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const y = Number(f.querySelector('#tgy').value), raw = f.querySelector('#tgk').value.replace(/[.\s]/g, '').replace(',', '.');
+    const m = f.querySelector('#tgm');
+    const kwh = Number(raw);
+    if (!y || !raw || !Number.isFinite(kwh) || kwh <= 0) { m.textContent = 'Isi tahun dan target kWh yang valid.'; return; }
+    if (!window.confirm(`Simpan target ${y}: ${num(kwh)} kWh?`)) return;
+    m.textContent = 'Menyimpan…';
+    try { await ctx.rpc('f_set_target', { p_tahun: y, p_kwh: kwh }, { cache: false }); await ctx.refresh(); targetCard(ctx, isAdmin); }
+    catch (er) { m.textContent = er.message; }
+  };
+}
+
 export async function dataPage(ctx) {
   const canUp = ['uploader', 'admin'].includes(ctx.me?.role);
   const isAdmin = ctx.me?.role === 'admin';
@@ -48,7 +77,8 @@ export async function dataPage(ctx) {
   const log = card('Riwayat unggahan', 'Semua pengguna melihat riwayat yang sama.', table([{ h: 'Waktu', k: 'created_at', f: (v) => `${tglPendek(v)} <small style="color:var(--muted)">${new Date(v).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</small>` },
     { h: 'Dataset', k: 'dataset', f: (v) => esc(DATASETS[v]?.label || v) }, { h: 'File', k: 'filename', f: (v) => `<span style="font-size:12px">${esc(v)}</span>` }, { h: 'Periode', k: 'periode', f: (v) => esc(String(v || '').replace(/\d{4}-\d{2}-\d{2}/g, (x) => tglPendek(x)).replace(/\b(20\d{2})(0[1-9]|1[0-2])\b/g, (x) => blthLabel(+x))) },
     { h: 'Baris', k: 'n_rows', r: 1, f: num }, { h: 'Oleh', k: 'uploaded_by', f: (v) => esc(v) }], d.log, { maxh: 380 }));
-  ctx.el.innerHTML = `<div class="grid" style="--min:250px">${cards}</div>${meter}${up}${del}${log}<div id="users"></div>`;
+  ctx.el.innerHTML = `<div class="grid" style="--min:250px">${cards}</div>${meter}<div id="tgt"></div>${up}${del}${log}<div id="users"></div>`;
+  targetCard(ctx, isAdmin);
   const df = ctx.el.querySelector('#delf');
   if (df) {
     const dsSel = df.querySelector('#dds'), bSel = df.querySelector('#ddb');

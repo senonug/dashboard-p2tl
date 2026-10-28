@@ -128,7 +128,7 @@ function filterBar(pageKey) {
     <div class="fld"><span class="lab">PERIODE CEPAT</span><div class="seg">${pr.map(([k, t]) => `<button type="button" data-p="${k}" class="${f.preset === k ? 'on' : ''}">${t}</button>`).join('')}</div></div>
     <div class="fld"><label for="fd">DARI TANGGAL</label><input id="fd" type="date" value="${f.from}"></div>
     <div class="fld"><label for="ft">SAMPAI TANGGAL</label><input id="ft" type="date" value="${f.to}"></div>
-    <div class="fld"><label for="fc">BANDINGKAN DENGAN</label><select id="fc"><option value="none">— tidak ada —</option><option value="prev" ${f.cmp === 'prev' ? 'selected' : ''}>Periode sebelumnya</option><option value="yoy" ${f.cmp === 'yoy' ? 'selected' : ''}>Periode sama tahun lalu</option></select></div>
+    ${pageKey === 'ringkasan' ? `<div class="fld"><label for="fc">BANDINGKAN DENGAN</label><select id="fc"><option value="none">— tidak ada —</option><option value="prev" ${f.cmp === 'prev' ? 'selected' : ''}>Periode sebelumnya</option><option value="yoy" ${f.cmp === 'yoy' ? 'selected' : ''}>Periode sama tahun lalu</option></select></div>` : ''}
     <div class="fld"><label for="fr">REGU</label><select id="fr"><option value="">Semua regu</option>${regu}</select></div>
     <div class="fld"><label for="fk">KECAMATAN</label><select id="fk"><option value="">Semua kecamatan</option>${kec}</select></div>
     <div class="fld"><label for="fl">JENIS LAYANAN</label><select id="fl"><option value="">Prabayar + Paskabayar</option><option ${f.layanan === 'PRABAYAR' ? 'selected' : ''} value="PRABAYAR">Prabayar</option><option ${f.layanan === 'PASKABAYAR' ? 'selected' : ''} value="PASKABAYAR">Paskabayar</option></select></div>
@@ -146,7 +146,7 @@ function bindFilters() {
   const fd = document.getElementById('fd'), ft = document.getElementById('ft');
   const onDate = () => { if (!fd.value || !ft.value) return; let a = fd.value, z = ft.value; if (a > z) [a, z] = [z, a]; set({ preset: 'custom', from: a, to: z }); };
   fd.onchange = onDate; ft.onchange = onDate;
-  document.getElementById('fc').onchange = (e) => set({ cmp: e.target.value });
+  const fc = document.getElementById('fc'); if (fc) fc.onchange = (e) => set({ cmp: e.target.value });
   document.getElementById('fr').onchange = (e) => set({ regu: e.target.value });
   document.getElementById('fk').onchange = (e) => set({ kec: e.target.value });
   document.getElementById('fl').onchange = (e) => set({ layanan: e.target.value });

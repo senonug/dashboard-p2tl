@@ -52,7 +52,7 @@ h1 { margin: 4px 0 0; font-size: 26px; font-weight: 800; letter-spacing: -0.02em
 .kpi .lab { font-size: 11.5px; color: var(--muted); font-weight: 700; letter-spacing: .02em; }
 .kpi .val { font-family: var(--mono); font-size: clamp(18px, 1.55vw, 25px); font-weight: 600; margin-top: 6px; letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kpi .foot { font-size: 12.5px; color: var(--muted); margin-top: 6px; line-height: 1.4; }
-.delta { font-family: var(--mono); font-size: 12px; font-weight: 600; padding: 1px 6px; border-radius: 4px; margin-left: 4px; }
+.delta { white-space: nowrap; font-family: var(--mono); font-size: 12px; font-weight: 600; padding: 1px 6px; border-radius: 4px; margin-left: 4px; }
 .delta.up { background: var(--good-bg); color: var(--good); } .delta.dn { background: var(--crit-bg); color: var(--crit); } .delta.eq { background: var(--line2); color: var(--ink2); }
 .lbl { font-size: 12px; color: var(--muted); font-weight: 700; letter-spacing: .02em; }
 .btn { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px; border-radius: 8px; border: 1px solid #D5D9E0; background: #fff; color: var(--ink); font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none; white-space: nowrap; }
@@ -252,4 +252,69 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .pkstat { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
   .pkst { border-left: 0; border-top: 1px solid var(--line); } .pkst:first-child { border-top: 0; }
   .pkper { grid-column: 1 / -1; }
+}
+
+/* ---------- Ringkasan Eksekutif: capaian target (v1.6) ---------- */
+.exec-cap { gap: 16px; border-top: 4px solid var(--pri); }
+.exec-top { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.exec-top h2 { font-size: 17px; }
+.exec-st { font-size: 13px; padding: 5px 11px; }
+.exec-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 20px 28px; align-items: center; }
+.exec-hero { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+.exec-hero > b { font-size: clamp(34px, 3.2vw, 46px); font-weight: 600; letter-spacing: -0.03em; line-height: 1; }
+.exec-hero > span { font-size: 14px; color: var(--ink2); }
+.exec-bar { position: relative; height: 22px; background: var(--line2); border-radius: 6px; margin-top: 16px; }
+.exec-bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--pri); border-radius: 6px; }
+.exec-bar em { position: absolute; top: -6px; bottom: -6px; width: 0; border-left: 2.5px dashed #0E1726; cursor: default; }
+.exec-bar em::after { content: ''; position: absolute; left: -9px; right: -9px; top: 0; bottom: 0; }
+.exec-scale { position: relative; height: 18px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.exec-scale span { position: absolute; top: 0; white-space: nowrap; }
+.exec-scale span:first-child { left: 0; }
+.exec-scale span:nth-child(2) { transform: translateX(-50%); font-weight: 700; color: var(--ink); }
+.exec-scale span.r { transform: translateX(calc(-100% + 8px)); } .exec-scale span.l { transform: translateX(-8px); }
+.exec-side { display: flex; flex-direction: column; gap: 12px; border-left: 1px solid var(--line); padding-left: 24px; }
+.exec-side > div, .exec-pay > div { display: flex; flex-direction: column; gap: 1px; }
+.exec-side .lbl, .exec-pay .lbl { font-size: 11.5px; }
+.exec-side b { font-size: 20px; font-weight: 600; }
+.exec-side small, .exec-pay small { font-size: 12.5px; color: var(--muted); }
+.exec-pay { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.exec-pay b { font-size: 20px; font-weight: 600; }
+.legend i.ln { width: 18px; height: 2.5px; border-radius: 2px; display: inline-block; }
+.legend i.ln.dash { height: 0; background: none !important; border-top: 2.5px dashed; }
+.exec-charts svg { display: block; overflow: visible; }
+.print-head { display: none; }
+@media (max-width: 900px) {
+  .exec-grid { grid-template-columns: 1fr; }
+  .exec-side { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 12px; }
+}
+
+/* Cetak Ringkasan Eksekutif: A4 portrait, satu halaman */
+@media print {
+  @page { size: A4 portrait; margin: 9mm 9mm 10mm; }
+  html, body { background: #fff; font-size: 12px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .main > header, .note:not(.warn), [data-print="hide"], #tip { display: none !important; }
+  .main { gap: 8px; }
+  #page { gap: 8px !important; }
+  .print-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 10px; border-bottom: 2px solid #0E1726; padding-bottom: 6px; }
+  .print-head b { display: block; font-size: 16px; }
+  .print-head span, .print-head .ph-r { font-size: 10.5px; color: #465063; }
+  .card { padding: 9px 12px; gap: 7px; border-radius: 8px; }
+  .card h2 { font-size: 12.5px; } .card .sub { font-size: 9.5px; margin-top: 1px; }
+  .exec-cap { gap: 8px; } .exec-hero > b { font-size: 30px; } .exec-bar { height: 14px; margin-top: 8px; }
+  .exec-grid { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) !important; gap: 10px 18px; }
+  .exec-side { border-left: 1px solid var(--line) !important; border-top: 0 !important; padding: 0 0 0 16px !important; }
+  [data-print="comp"] .stack i { height: 13px !important; }
+  .exec-side { gap: 5px; } .exec-side b, .exec-pay b { font-size: 14px; } .exec-side small, .exec-pay small { font-size: 9.5px; }
+  .grid { --min: 150px !important; gap: 7px; grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .kpi { padding: 7px 9px; } .kpi .bar { margin-bottom: 5px; } .kpi .lab { font-size: 8.5px; } .kpi .val { font-size: 15px; margin-top: 3px; } .kpi .foot { font-size: 8.5px; margin-top: 3px; }
+  .delta { font-size: 8.5px; }
+  .two { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .exec-charts svg { max-height: 165px; }
+  .legend { font-size: 9px; gap: 3px 10px; }
+  [data-print="comp"] .tbox, [data-print="comp"] > p.sub:last-child, [data-print="comp"] + section p.sub:last-child { display: none; }
+  .stack i { height: 16px !important; } .exec-pay .stack { margin: 0; }
+  ul.ins { font-size: 9.5px; line-height: 1.4; }
+  .kpi .val { font-size: 14px !important; }
+  .chip { font-size: 9px; padding: 1px 6px; }
+  a { color: inherit; text-decoration: none; }
 }
