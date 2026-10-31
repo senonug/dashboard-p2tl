@@ -1,0 +1,15 @@
+-- =====================================================================
+--  Dashboard P2TL — pemeliharaan ruang database (v1.8a)
+--
+--  Kapan dijalankan: bila meteran "Kapasitas database" di Kelola Data di atas ±75%,
+--  atau sekali setelah unggahan besar (mis. DPM/OLAP banyak bulan sekaligus, DIL baru).
+--
+--  Mengapa perlu: setiap unggahan bulanan memperbarui baris pelanggan. Postgres menyimpan
+--  versi lama baris; ruangnya dipakai ulang, tetapi tidak dikembalikan. VACUUM FULL menulis
+--  ulang tabel sehingga ukurannya kembali ke isi sebenarnya. Tidak ada data yang dihapus.
+--
+--  Cara pakai: Supabase › SQL Editor › New query › tempel isi file ini (SATU perintah saja,
+--  jangan digabung dengan perintah lain) › Run. Lama ±1–3 menit; tunda unggahan selama berjalan.
+--  Hasilnya terlihat di meteran Kapasitas database di Kelola Data (muat ulang halaman).
+-- =====================================================================
+vacuum full analyze pakai_paska_th, pakai_pra_th, dil, pemeriksaan, skor_dasar, stg_paska, stg_pra;

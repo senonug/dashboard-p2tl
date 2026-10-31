@@ -216,19 +216,20 @@ async function risiko(ctx) {
       <div><div class="lbl" style="margin-bottom:10px">Tahun tera meter</div>${hbars(d.tera_hit.map((r) => ({ l: TERA_LBL[r.o], v: ratio(r.tm, r.n) || 0, x: `(${num(r.tm)}/${num(r.n)})` })), { fmt: (v) => pct(v), lw: 70, vw: 130 })}</div>
     </div>`);
   const pool = grid([
-    kpi('PRABAYAR TIDAK BELI TOKEN', d.has_pra ? num(d.pool.nobuy) : '–', `Sepanjang ${blthLabel(d.blth)}, belum diperiksa 90 hari`, C.s2),
-    kpi('PRABAYAR JAM NYALA <40', d.has_pra ? num(d.pool.prajn) : '–', 'kWh token ÷ kVA', C.s2),
+    kpi('PRABAYAR TIDAK BELI TOKEN', d.has_pra ? num(d.pool.nobuy) : '–', `Sepanjang ${blthLabel(d.blth_pra || d.blth)}, belum diperiksa 90 hari`, C.s2),
+    kpi('PRABAYAR JAM NYALA <40', d.has_pra ? num(d.pool.prajn) : '–', 'Rata-rata kWh token 3 bulan ÷ kVA', C.s2),
     kpi('PASKABAYAR JAM NYALA <40', d.has_pas ? num(d.pool.pasjn) : '–', 'Kode baca normal', C.s2),
     kpi('KODE BACA BERMASALAH', d.has_pas ? num(d.pool.kd) : '–', 'Meter macet / tidak ada / MCB / tinggi', C.s2),
   ].join(''), 210);
   const kat = Object.fromEntries(d.kat.map((x) => [x.k, x.n]));
+  const pemakaianTxt = [d.blth_pas ? `DPM ${blthLabel(d.blth_pas)}` : '', d.blth_pra ? `OLAP ${blthLabel(d.blth_pra)}` : ''].filter(Boolean).join(' dan ') || `pemakaian ${blthLabel(d.blth)}`;
   const w = table([{ h: 'Sinyal', k: 'a' }, { h: 'Sumber data', k: 'b' }, { h: 'Bobot', k: 'c', r: 1 }], [
-    { a: 'Jam nyala < 40 jam/bulan', b: 'DPM / OLAP prabayar', c: 35 }, { a: 'Prabayar tidak membeli token sebulan penuh', b: 'OLAP prabayar', c: 20 },
-    { a: 'Kode baca bermasalah', b: 'DPM', c: 15 }, { a: 'Pemakaian turun ≥50% vs rata-rata 3 bulan sebelumnya', b: 'DPM / OLAP (multi-bulan)', c: 15 },
-    { a: 'Daya ≥2.200 VA dengan jam nyala < 40', b: 'DIL + pemakaian', c: 10 }, { a: 'Meter tera ≤2012', b: 'DIL', c: 10 },
+    { a: 'Jam nyala < 40 jam/bulan (prabayar: rata-rata 3 bulan)', b: 'DPM / OLAP prabayar', c: 35 }, { a: 'Prabayar tidak membeli token sebulan penuh', b: 'OLAP prabayar', c: 20 },
+    { a: 'Kode baca bermasalah', b: 'DPM', c: 15 }, { a: 'Pemakaian turun ≥50% vs rata-rata 3 bulan sebelumnya (prabayar: hanya yang membeli bulan ini)', b: 'DPM / OLAP (multi-bulan)', c: 15 },
+    { a: 'Daya ≥2.200 VA dengan jam nyala < 40', b: 'DPM / OLAP', c: 10 }, { a: 'Meter tera ≤2012', b: 'DIL', c: 10 },
     { a: 'Ada temuan di gardu yang sama (6 bulan)', b: 'Pemeriksaan + DIL', c: 5 }]);
-  const wc = card('Komponen skor risiko', `Skor 0–100 per pelanggan aktif, dihitung dari pemakaian ${blthLabel(d.blth)}. Pelanggan yang sudah diperiksa dalam 90 hari terakhir dikeluarkan dari daftar.`,
-    w + `<div class="legend"><span class="chip crit">Tinggi ≥60 · ${num(kat.Tinggi || 0)}</span><span class="chip warn">Sedang 35–59 · ${num(kat.Sedang || 0)}</span><span class="chip">Rendah &lt;35 · ${num(kat.Rendah || 0)}</span></div>`);
+  const wc = card('Komponen skor risiko', `Skor 0–100 per pelanggan, dihitung dari ${pemakaianTxt}. Pelanggan yang sudah diperiksa dalam 90 hari terakhir dikeluarkan dari daftar.`,
+    w + `<div class="legend"><span class="chip crit">Tinggi ≥60 · ${num(kat.Tinggi || 0)}</span><span class="chip warn">Sedang 35–59 · ${num(kat.Sedang || 0)}</span><span class="chip" title="Perkiraan: jumlah pelanggan yang diskor dikurangi yang diperiksa 90 hari terakhir">Rendah &lt;35 · ±${num(kat.Rendah || 0)}</span></div>`);
   const chipK = (k) => `<span class="chip ${k === 'Tinggi' ? 'crit' : k === 'Sedang' ? 'warn' : ''}">${k}</span>`;
   const sigs = (r) => [r.jn !== null && r.jn < 40 ? `JN ${num(r.jn, 0)} jam` : '', r.layanan === 'PRABAYAR' && !r.beli ? 'Tidak beli token' : '',
     r.kd && r.kd !== 'NORMAL' ? title(r.kd) : '', r.prev_k > 0 && r.kwh < 0.5 * r.prev_k ? 'Turun ≥50%' : '', r.tahun_tera && r.tahun_tera <= 2012 ? `Tera ${r.tahun_tera}` : '']
@@ -240,7 +241,7 @@ async function risiko(ctx) {
       { h: 'Layanan', k: 'layanan', f: (v) => esc(title(v)) }, { h: 'Gardu', k: 'gardu' }, { h: 'Kelurahan', k: 'kelurahan', f: (v) => esc(title(v || '-')) },
       { h: 'kWh', k: 'kwh', r: 1, f: (v) => num(v, 1) }, { h: 'Sinyal', k: 'x', f: (v, r) => sigs(r) }, { h: 'Skor', k: 'skor', r: 1 }, { h: 'Risiko', k: 'kat', f: chipK },
       { h: '', k: 'lat', f: (v, r) => (r.lat ? `<a href="${gmaps(r.lat, r.lon)}" target="_blank" rel="noopener" aria-label="Lokasi di Google Maps">${icon(IC.pin, 15)}</a>` : '') }], d.list, { maxh: 560 }));
-  ctx.el.innerHTML = sig + pool + `<div class="two">${wc}${card('Cara membaca', null, `<ul class="ins"><li>Skor dihitung untuk <b>pelanggan aktif di DIL</b> memakai pemakaian bulan ${blthLabel(d.blth)}${d.has_pra ? '' : ' (data prabayar bulan ini belum ada)'}${d.has_pas ? '' : ' (data paskabayar bulan ini belum ada)'}.</li><li>Sinyal "turun ≥50%" baru aktif bila sudah ada data 3 bulan sebelumnya.</li><li>Bobot awal ini bisa dikalibrasi ulang setelah beberapa bulan, dengan membandingkan skor dengan hit rate aktual di halaman ini.</li><li>Pelanggan yang tidak membeli token bisa juga berarti rumah kosong. Pastikan di lapangan.</li></ul>`)}</div>` + lc;
+  ctx.el.innerHTML = sig + pool + `<div class="two">${wc}${card('Cara membaca', null, `<ul class="ins"><li>Skor dihitung untuk <b>pelanggan paskabayar di DPM ${d.blth_pas ? blthLabel(d.blth_pas) : '(belum ada)'}</b> dan <b>pelanggan prabayar</b> yang membeli token dalam 3 bulan s.d. ${d.blth_pra ? blthLabel(d.blth_pra) : '(OLAP belum ada)'} atau tercatat aktif di DIL. DIL dipakai untuk nama, alamat, koordinat, gardu, dan tahun tera.</li><li>Sinyal "turun ≥50%" baru aktif bila sudah ada data 3 bulan sebelumnya.</li><li>Bobot awal ini bisa dikalibrasi ulang setelah beberapa bulan, dengan membandingkan skor dengan hit rate aktual di halaman ini.</li><li>Pelanggan yang tidak membeli token bisa juga berarti rumah kosong. Pastikan di lapangan.</li></ul>`)}</div>` + lc;
   ctx.el.querySelector('#rk').onchange = (e) => { rkKat = e.target.value; risiko(ctx); };
   if (canUp) { const w = ctx.el.querySelector('#rkx'); if (w) { w.insertAdjacentHTML('beforebegin', btnSkor); bindSkor(); } }
   ctx.el.querySelector('#rkx').onclick = async (e) => {

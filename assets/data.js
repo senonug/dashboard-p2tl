@@ -4,6 +4,29 @@ import { DATASETS } from './datasets.js';
 const DB_LIMIT = 500 * 1024 * 1024;
 const fmtSize = (b) => (b >= 1e9 ? num(b / 1e9, 2) + ' GB' : b >= 1e6 ? num(b / 1e6, 1) + ' MB' : num(b / 1e3) + ' KB');
 const jobs = [];
+const BLN = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+// Antrean penerapan: file diterapkan satu per satu; skor risiko dihitung sekali setelah antrean kosong
+const antre = [];
+let antreJalan = false;
+let skorState = null; // null | 'hitung' | 'ok' | pesan galat
+
+// Kalender bulan Jan–Des untuk DPM / OLAP (v1.8a)
+function kalender(list, label) {
+  const by = new Map(list.map((x) => [x.blth, x]));
+  const now = new Date();
+  const years = [...new Set([...list.map((x) => Math.floor(x.blth / 100)), now.getFullYear()])].sort((a, b) => b - a);
+  const prevOf = (b) => (b % 100 === 1 ? b - 89 : b - 1);
+  const rows = years.map((y) => `<tr><td class="mono" style="font-weight:700">${y}</td>${BLN.map((m, i) => {
+    const b = y * 100 + i + 1, x = by.get(b);
+    if (!x) return `<td class="calx" title="${m} ${y}: belum ada"><span class="cal0">–</span></td>`;
+    const pv = by.get(prevOf(b));
+    const ch = pv && pv.n ? (x.n - pv.n) / pv.n * 100 : null;
+    const bad = x.status !== 'ok', turun = ch !== null && ch < -5;
+    const tip = `${m} ${y}: ${num(x.n)} pelanggan${ch !== null ? ` (${ch >= 0 ? '+' : ''}${num(ch, 1)}% vs bulan sebelumnya` + (x.n_baru !== null && x.n_baru !== undefined ? `; ${num(x.n_baru)} baru, ${num(x.n_hilang)} tidak ada lagi` : '') + ')' : ''}${bad ? ' — UNGGAH TERPUTUS, unggah ulang' : ''}${x.file ? ` · ${x.file}` : ''}${x.oleh ? ` · ${x.oleh}` : ''}`;
+    return `<td class="calx ${bad ? 'calbad' : turun ? 'calwarn' : 'calok'}" title="${esc(tip)}"><b>${num(x.n)}</b>${ch !== null ? `<small>${ch >= 0 ? '+' : ''}${num(ch, 1)}%</small>` : bad ? '<small>terputus</small>' : ''}</td>`;
+  }).join('')}</tr>`).join('');
+  return `<div style="font-weight:700;font-size:13px;margin:4px 0 6px">${label}</div><div class="tbox"><table class="tbl cal"><thead><tr><th></th>${BLN.map((m) => `<th>${m}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
 
 // Target tahunan kWh TS terbayar (dipakai Ringkasan Eksekutif)
 async function targetCard(ctx, isAdmin) {
@@ -40,11 +63,17 @@ export async function dataPage(ctx) {
   const d = await ctx.rpc('f_datasets', {}, { cache: false });
   if (!ctx.alive()) return;
   const range = (a, b) => (a ? (a === b ? tglPendek(a) : `${tglPendek(a)} – ${tglPendek(b)}`) : 'Belum ada');
-  const months = (arr) => (arr.length ? arr.map((x) => `${blthLabel(x.blth)} <small style="color:var(--muted)">(${num(x.n)})</small>`).join(', ') : 'Belum ada');
+  const ringkasBulan = (arr) => {
+    const ok = arr.filter((x) => x.status === 'ok');
+    if (!ok.length) return arr.length ? '<span class="err">Unggah terputus, unggah ulang</span>' : 'Belum ada';
+    const last = ok[ok.length - 1];
+    const putus = arr.filter((x) => x.status !== 'ok');
+    return `${blthLabel(ok[0].blth)} – ${blthLabel(last.blth)} · ${ok.length} bulan<br><span style="color:var(--muted)">Terakhir ${num(last.n)} pelanggan</span>${putus.length ? `<br><span class="err">Terputus: ${putus.map((x) => blthLabel(x.blth)).join(', ')}</span>` : ''}`;
+  };
   const ds = [
     ['Data Pemeriksaan P2TL', 'Bulanan · rekap P2TL (157 kolom)', d.pemeriksaan.n ? `${num(d.pemeriksaan.n)} pemeriksaan` : '', range(d.pemeriksaan.min, d.pemeriksaan.max), !!d.pemeriksaan.n],
-    ['DPM Baca Paskabayar', 'Bulanan · per BLTH', '', months(d.paska), d.paska.length > 0],
-    ['OLAP Prabayar', 'Bulanan · diringkas per pelanggan', '', months(d.pra), d.pra.length > 0],
+    ['DPM Baca Paskabayar', 'Bulanan · disimpan per tahun', '', ringkasBulan(d.paska), d.paska.some((x) => x.status === 'ok')],
+    ['OLAP Prabayar', 'Bulanan · diringkas per pelanggan, disimpan per tahun', '', ringkasBulan(d.pra), d.pra.some((x) => x.status === 'ok')],
     ['Data Induk Langganan (DIL)', 'Berkala · menimpa data lama per IDPEL', d.dil.n ? `${num(d.dil.n)} pelanggan · ${num(d.dil.aktif)} aktif` : '', d.dil.snapshot || (d.dil.n ? 'Tersedia' : 'Belum ada'), !!d.dil.n],
     ['Laporan TS Terbayar', 'Bulanan · per bulan tanggal register', d.ts.n ? `${num(d.ts.n)} pelunasan` : '', range(d.ts.min, d.ts.max), !!d.ts.n],
   ];
@@ -54,8 +83,10 @@ export async function dataPage(ctx) {
     <div style="font-size:12.5px;line-height:1.65"><span class="lbl">Periode</span><br>${per}${n ? `<br><span style="color:var(--muted)">${n}</span>` : ''}</div></section>`).join('');
   const meter = `<div class="card" style="gap:8px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><h2>Kapasitas database (paket gratis 500 MB)</h2><span class="mono">${fmtSize(used)} · ${pct((used / DB_LIMIT) * 100, 0)}</span></div>
     <div class="meter"><i style="width:${Math.min(100, (used / DB_LIMIT) * 100)}%;background:${used / DB_LIMIT > 0.85 ? '#d03b3b' : used / DB_LIMIT > 0.65 ? '#eda100' : '#1baf7a'}"></i></div>
-    <p class="sub">Setiap bulan data pemakaian (DPM + OLAP) dan pemeriksaan menambah sekitar 35–40 MB. Bila mendekati penuh, hapus bulan pemakaian lama lewat menu Hapus data (admin) atau naikkan paket Supabase.</p>
+    <p class="sub">Sejak v1.8a DPM dan OLAP disimpan per tahun: satu bulan DPM + OLAP menambah sekitar 10 MB (bisa sampai ±18 MB sebelum dirapikan, karena versi lama baris masih tersimpan). Bila meteran di atas ±75%, admin menjalankan <b>supabase/pemeliharaan.sql</b> di SQL Editor Supabase untuk merapikan ruang. Bila tetap penuh, hapus bulan pemakaian lama atau naikkan paket Supabase.</p>
     </div>`;
+  const kal = card('Kalender data pemakaian', 'Jumlah pelanggan per bulan yang sudah diunggah. Kuning: turun lebih dari 5% dibanding bulan sebelumnya (periksa apakah file lengkap). Merah: unggah terputus, unggah ulang file bulan itu. Arahkan kursor ke kotak untuk rinciannya.',
+    kalender(d.paska, 'DPM Paskabayar') + kalender(d.pra, 'OLAP Prabayar'));
   const up = canUp ? card('Unggah file baru', 'Tarik satu atau beberapa file sekaligus. Jenis data dikenali otomatis dari judul kolom. Format: .xlsx atau .csv. File dibaca di browser Anda, lalu hanya kolom yang dipakai dashboard yang dikirim dalam format CSV ringkas (sekitar setengah ukuran JSON). File aslinya tidak disimpan. NIK dan nomor HP dibuang.',
     `<label class="drop" id="drop" for="fi">${icon(IC.upload, 26, '#1c5cab')}<div style="margin-top:8px;font-weight:700">Tarik file ke sini atau klik untuk memilih</div><div class="sub" style="margin-top:4px">Pemeriksaan P2TL · DPM paskabayar · OLAP prabayar · DIL · Laporan TS terbayar</div></label>
      <input type="file" id="fi" multiple accept=".xlsx,.xlsm,.csv,.txt" class="hidden"><div id="jobs" style="display:flex;flex-direction:column;gap:12px"></div>`)
@@ -69,7 +100,7 @@ export async function dataPage(ctx) {
     dil: d.dil.n ? [['semua', d.dil.n]] : [],
   };
   const DSL = { pemeriksaan: 'Data Pemeriksaan P2TL', paska: 'DPM Baca Paskabayar', pra: 'OLAP Prabayar', ts: 'Laporan TS Terbayar', dil: 'Data Induk Langganan (seluruhnya)' };
-  const del = isAdmin ? card('Hapus data (khusus admin)', 'Hapus satu bulan data yang salah sebelum mengunggah ulang, atau kosongkan DIL sebelum mengganti snapshot. Tindakan ini tercatat di riwayat dan tidak bisa dibatalkan.',
+  const del = isAdmin ? card('Hapus data (khusus admin)', 'Hapus satu bulan data yang salah. Untuk DPM/OLAP tidak perlu menghapus sebelum unggah ulang: bulan yang sama otomatis diganti. Mengosongkan DIL juga menghapus nama & alamat lama yang tidak bermasking. Tindakan ini tercatat di riwayat dan tidak bisa dibatalkan.',
     `<form id="delf" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end">
       <div class="fld"><label for="dds">DATASET</label><select id="dds">${Object.entries(DSL).map(([k, t]) => `<option value="${k}" ${opt[k].length ? '' : 'disabled'}>${t}${opt[k].length ? '' : ' (kosong)'}</option>`).join('')}</select></div>
       <div class="fld"><label for="ddb">PERIODE</label><select id="ddb"></select></div>
@@ -77,7 +108,7 @@ export async function dataPage(ctx) {
   const log = card('Riwayat unggahan', 'Semua pengguna melihat riwayat yang sama.', table([{ h: 'Waktu', k: 'created_at', f: (v) => `${tglPendek(v)} <small style="color:var(--muted)">${new Date(v).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</small>` },
     { h: 'Dataset', k: 'dataset', f: (v) => esc(DATASETS[v]?.label || v) }, { h: 'File', k: 'filename', f: (v) => `<span style="font-size:12px">${esc(v)}</span>` }, { h: 'Periode', k: 'periode', f: (v) => esc(String(v || '').replace(/\d{4}-\d{2}-\d{2}/g, (x) => tglPendek(x)).replace(/\b(20\d{2})(0[1-9]|1[0-2])\b/g, (x) => blthLabel(+x))) },
     { h: 'Baris', k: 'n_rows', r: 1, f: num }, { h: 'Oleh', k: 'uploaded_by', f: (v) => esc(v) }], d.log, { maxh: 380 }));
-  ctx.el.innerHTML = `<div class="grid" style="--min:250px">${cards}</div>${meter}<div id="tgt"></div>${up}${del}${log}<div id="users"></div>`;
+  ctx.el.innerHTML = `<div class="grid" style="--min:250px">${cards}</div>${kal}${meter}<div id="tgt"></div>${up}${del}${log}<div id="users"></div>`;
   targetCard(ctx, isAdmin);
   const df = ctx.el.querySelector('#delf');
   if (df) {
@@ -95,7 +126,7 @@ export async function dataPage(ctx) {
       try {
         const n = await ctx.rpc('f_hapus_data', { p_dataset: dsv, p_blth: b === 'semua' ? null : Number(b) }, { cache: false });
         m.textContent = `${num(n)} baris dihapus.`;
-        if (dsv === 'paska' || dsv === 'pra') {
+        if (dsv === 'paska' || dsv === 'pra' || dsv === 'dil') {
           m.textContent += ' Menghitung ulang skor risiko (±20 detik)…';
           try { await ctx.rpc('f_hitung_skor', {}, { cache: false }); m.textContent = `${num(n)} baris dihapus. Skor risiko diperbarui.`; }
           catch (er2) { m.textContent = `${num(n)} baris dihapus. Skor risiko gagal dihitung: ${er2.message}`; }
@@ -128,8 +159,8 @@ function startJob(ctx, file) {
     const m = e.data;
     if (m.type === 'progress') { job.phase = m.phase; job.done = m.done; job.total = m.total; updateJob(job); return; }
     if (m.type === 'parsed') { job.state = 'review'; job.info = m; }
-    if (m.type === 'applied') { job.state = 'done'; job.sent = m.sent; job.bytes = m.bytes; job.skorErr = m.skorErr; job.w.terminate(); ctx.refresh().then(() => { if (document.getElementById('jobs')) return dataPage(ctx); }).catch((er) => console.warn(er)); }
-    if (m.type === 'error') { job.state = 'error'; job.err = m.message; job.w.terminate(); }
+    if (m.type === 'applied') { job.state = 'done'; job.sent = m.sent; job.bytes = m.bytes; job.needSkor = m.needSkor; job.hasil = m.hasil || []; job.w.terminate(); if (job.selesai) job.selesai(); }
+    if (m.type === 'error') { job.state = 'error'; job.err = m.message; job.w.terminate(); if (job.selesai) job.selesai(); }
     renderJobs(ctx);
   };
   job.w.onerror = (e) => { job.state = 'error'; job.err = e.message || 'Worker gagal dimuat'; renderJobs(ctx); };
@@ -137,13 +168,44 @@ function startJob(ctx, file) {
   renderJobs(ctx);
 }
 
-const PH = { periksa: 'Memeriksa struktur file', baca: 'Membaca baris', kirim: 'Mengirim ke database', skor: 'Menghitung ulang skor risiko (±20 detik)', antri: 'Menyiapkan' };
+const PH = { periksa: 'Memeriksa struktur file', baca: 'Membaca baris', kirim: 'Mengirim ke database', gabung: 'Menggabungkan ke data tahunan', antri: 'Menyiapkan' };
+
+// Jalankan antrean penerapan satu per satu, lalu hitung skor risiko sekali
+async function jalankanAntre(ctx) {
+  if (antreJalan) return;
+  antreJalan = true;
+  let perluSkor = false;
+  try {
+    while (antre.length) {
+      const j = antre.shift();
+      if (j.state !== 'queued') continue;
+      const { data } = await ctx.sb.auth.getSession(); // token baru tiap file (antrean bisa lama)
+      j.state = 'sending'; j.phase = 'kirim'; j.done = 0; j.total = j.info.n; renderJobs(ctx);
+      await new Promise((ok) => {
+        j.selesai = ok;
+        j.w.postMessage({ cmd: 'apply', cfg: { url: ctx.CONFIG.url, apikey: ctx.CONFIG.key, token: data.session.access_token, filename: j.file.name, snapshot: j.snapshot } });
+      });
+      if (j.state === 'done' && j.needSkor) perluSkor = true;
+      renderJobs(ctx);
+    }
+    if (perluSkor) {
+      skorState = 'hitung'; renderJobs(ctx);
+      try { await ctx.rpc('f_hitung_skor', {}, { cache: false }); skorState = 'ok'; }
+      catch (e) { skorState = e.message || String(e); }
+    }
+  } finally {
+    antreJalan = false;
+  }
+  try { await ctx.refresh(); } catch (e) { console.warn(e); }
+  if (document.getElementById('jobs')) dataPage(ctx);
+}
 function updateJob(job) {
   const el = document.querySelector(`[data-job="${job.id}"]`);
   if (!el) return;
   const p = job.total ? Math.min(100, (job.done / job.total) * 100) : 0;
   const bar = el.querySelector('.prog i'); if (bar) bar.style.width = p.toFixed(1) + '%';
-  const t = el.querySelector('.ptxt'); if (t) t.textContent = `${PH[job.phase] || job.phase} · ${pct(p, 0)}${job.phase === 'kirim' ? ` (${num(job.done)} / ${num(job.total)} baris)` : ''}`;
+  const t = el.querySelector('.ptxt'); if (t) t.textContent = `${PH[job.phase] || job.phase} · ${pct(p, 0)}${job.phase === 'kirim' ? ` (${num(job.done)} / ${num(job.total)} baris)` : job.phase === 'gabung' ? ` (bagian ${num(job.done)} / ${num(job.total)}) — jangan tutup halaman` : ''}`;
+  const cb = el.querySelector('.cancelbox'); if (cb) cb.style.display = job.phase === 'kirim' ? '' : 'none';
 }
 
 function renderJobs(ctx) {
@@ -151,12 +213,19 @@ function renderJobs(ctx) {
   if (!box) return;
   box.innerHTML = jobs.slice(0, 8).map((j) => {
     const head = `<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><div><b>${esc(j.file.name)}</b> <small style="color:var(--muted)">${fmtSize(j.file.size)}</small></div>`;
+    if (j.state === 'queued') return `<div class="job" data-job="${j.id}">${head}<span class="chip">Menunggu giliran</span></div><div class="sub" style="margin:0">Diterapkan setelah file sebelumnya selesai.</div><div><button class="btn sm" type="button" data-dismiss>Batalkan</button></div></div>`;
     if (j.state === 'parsing' || j.state === 'sending') {
       return `<div class="job" data-job="${j.id}">${head}<span class="chip info"><span class="spin" style="width:12px;height:12px;border-width:2px;margin:0"></span>${j.state === 'sending' ? 'Mengirim' : 'Membaca'}</span></div><div class="prog"><i></i></div><div class="ptxt sub" style="margin:0">${PH[j.phase] || ''}</div>
-        ${j.state === 'sending' ? '<div><button class="btn sm" type="button" data-cancel>Batalkan pengiriman</button></div>' : ''}</div>`;
+        ${j.state === 'sending' ? '<div class="cancelbox"><button class="btn sm" type="button" data-cancel>Batalkan pengiriman</button></div>' : ''}</div>`;
     }
     if (j.state === 'error') return `<div class="job" data-job="${j.id}">${head}<span class="chip crit">Gagal</span></div><div class="err">${esc(j.err)}</div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
-    if (j.state === 'done') return `<div class="job" data-job="${j.id}">${head}<span class="chip good">${icon(IC.check, 13)}Tersimpan</span></div><div class="sub" style="margin:0">${num(j.sent)} baris ${esc(DATASETS[j.info.ds].label)} tersimpan${j.bytes ? ` (data terkirim ${fmtSize(j.bytes)})` : ''}. Semua halaman dashboard sudah memakai data terbaru.${j.skorErr ? `<br><span class="err">Skor risiko belum terhitung (${esc(j.skorErr)}). Buka halaman Profil Risiko lalu klik "Hitung ulang skor".</span>` : ''}</div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
+    if (j.state === 'done') {
+      const bl = (j.hasil || []).map((x) => `${blthLabel(x.blth)}: <b>${num(x.n)}</b> pelanggan${x.n_prev ? ` (bulan sebelumnya ${num(x.n_prev)}${x.n_baru !== null && x.n_baru !== undefined ? `; ${num(x.n_baru)} baru, ${num(x.n_hilang)} tidak ada lagi` : ''})` : ''}${x.n_prev && (x.n - x.n_prev) / x.n_prev < -0.05 ? ' <span class="chip warn">turun &gt;5%, periksa kelengkapan file</span>' : ''}`).join('<br>');
+      const sk = !j.needSkor ? '' : skorState === 'hitung' ? '<br><span class="spin" style="width:11px;height:11px;border-width:2px;margin:0 4px -1px 0;display:inline-block"></span>Menghitung ulang skor risiko…'
+        : skorState === 'ok' ? '<br>Skor risiko sudah diperbarui.' : antreJalan ? '<br>Skor risiko dihitung setelah antrean selesai.'
+        : skorState ? `<br><span class="err">Skor risiko belum terhitung (${esc(skorState)}). Buka halaman Profil Risiko lalu klik "Hitung ulang skor".</span>` : '';
+      return `<div class="job" data-job="${j.id}">${head}<span class="chip good">${icon(IC.check, 13)}Tersimpan</span></div><div class="sub" style="margin:0">${num(j.sent)} baris ${esc(DATASETS[j.info.ds].label)} tersimpan${j.bytes ? ` (data terkirim ${fmtSize(j.bytes)})` : ''}.${bl ? `<br>${bl}` : ''}${sk}</div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
+    }
     if (j.state === 'cancelled') return `<div class="job" data-job="${j.id}">${head}<span class="chip">Dibatalkan</span></div><div><button class="btn sm" type="button" data-dismiss>Tutup</button></div></div>`;
     // review
     const m = j.info, st = m.stats, def = DATASETS[m.ds];
@@ -169,12 +238,17 @@ function renderJobs(ctx) {
       ['Duplikat di dalam file', st.dup ? `${num(st.dup)} (yang terakhir dipakai)` : '0'],
       ['Baris dilewati (kunci kosong)', num(st.skipped)],
       ['Kolom sensitif', st.sensitive?.length ? `<span class="chip warn">${esc(st.sensitive.join(', '))}</span> dibuang, tidak dikirim` : 'Tidak ada'],
-      ['Cara simpan', def.mode === 'replace-month' ? `Data bulan yang sama di database <b>diganti</b> (${Object.keys(st.blth).map((b) => blthLabel(+b)).join(', ')})` : 'Ditambahkan; baris dengan kunci sama <b>diperbarui</b>'],
+      ['Cara simpan', def.mode === 'bulanan' ? `Bulan ${Object.keys(st.blth).map((b) => blthLabel(+b)).join(', ')} di database <b>diganti</b> seluruhnya oleh isi file ini. Bila pengiriman gagal di tengah jalan, data lama tidak berubah.`
+        : def.mode === 'replace-month' ? `Data bulan yang sama di database <b>diganti</b> (${Object.keys(st.blth).map((b) => blthLabel(+b)).join(', ')})` : 'Ditambahkan; baris dengan kunci sama <b>diperbarui</b>'],
+      ...(m.ds === 'pemeriksaan' ? [['Koordinat terbaca', `${num(st.extra.koord || 0)} dari ${num(m.n)} pemeriksaan (${pct(((st.extra.koord || 0) / Math.max(1, m.n)) * 100, 1)})${(st.extra.koord || 0) < m.n * 0.5 ? ' <span class="chip warn">sebagian besar tanpa koordinat — titik tidak tampil di peta</span>' : ''}`]] : []),
+      ...(m.ds === 'dil' ? [['Koordinat terbaca', `${num(st.extra.koord || 0)} dari ${num(m.n)} pelanggan (${pct(((st.extra.koord || 0) / Math.max(1, m.n)) * 100, 1)})`],
+        ['Nama bermasking (*)', st.extra.masking ? `${num(st.extra.masking)} pelanggan. Nama & alamat lama di database yang tidak bermasking <b>dipertahankan</b>.` : 'Tidak ada']] : []),
       ['Rincian', statusRows || '–'],
     ];
     const lost = st.csvLines && st.csvRecords < st.csvLines * 0.98 ? st.csvLines - st.csvRecords : 0;
     const warnHtml = lost ? `<div class="note warn"><b>Peringatan:</b> file CSV berisi ${num(st.csvLines)} baris teks, tetapi hanya ${num(st.csvRecords)} baris data yang terbaca. Kemungkinan ada tanda kutip (") yang tidak berpasangan di sumbernya. Sebaiknya gunakan file .xlsx untuk data ini.</div>` : '';
-    const snap = m.ds === 'dil' ? `<div class="fld"><label for="snap-${j.id}">LABEL SNAPSHOT DIL</label><input id="snap-${j.id}" value="${esc(j.file.name.replace(/\.[^.]+$/, ''))}"></div>` : '';
+    const snapDef = st.extra?.rekap && /^20\d{4}$/.test(st.extra.rekap) ? `DIL ${blthLabel(+st.extra.rekap)}` : j.file.name.replace(/\.[^.]+$/, '');
+    const snap = m.ds === 'dil' ? `<div class="fld"><label for="snap-${j.id}">LABEL SNAPSHOT DIL</label><input id="snap-${j.id}" value="${esc(snapDef)}"></div>` : '';
     return `<div class="job" data-job="${j.id}">${head}<span class="chip info">Periksa sebelum diterapkan</span></div>
       <div class="tbox"><table class="tbl"><tbody>${rows.map(([a, b]) => `<tr><td style="color:var(--muted);width:240px">${a}</td><td class="wrap">${b}</td></tr>`).join('')}</tbody></table></div>
       ${warnHtml}${snap}<div style="display:flex;gap:10px;justify-content:flex-end"><button class="btn" type="button" data-dismiss>Batalkan</button><button class="btn pri" type="button" data-apply>Terapkan data</button></div></div>`;
@@ -183,14 +257,14 @@ function renderJobs(ctx) {
     const j = jobs.find((x) => x.id === el.dataset.job);
     updateJob(j);
     const ap = el.querySelector('[data-apply]');
-    if (ap) ap.onclick = async () => {
-      const { data } = await ctx.sb.auth.getSession();
+    if (ap) ap.onclick = () => {
       const snapEl = el.querySelector(`#snap-${j.id}`);
-      j.state = 'sending'; j.phase = 'kirim'; j.done = 0; j.total = j.info.n; renderJobs(ctx);
-      j.w.postMessage({ cmd: 'apply', cfg: { url: ctx.CONFIG.url, apikey: ctx.CONFIG.key, token: data.session.access_token, filename: j.file.name, snapshot: snapEl ? snapEl.value : null } });
+      j.snapshot = snapEl ? snapEl.value : null;
+      j.state = 'queued'; antre.push(j); skorState = null; renderJobs(ctx);
+      jalankanAntre(ctx);
     };
     const ds = el.querySelector('[data-dismiss]');
-    if (ds) ds.onclick = () => { try { j.w && j.w.terminate(); } catch (e) { /* abaikan */ } jobs.splice(jobs.indexOf(j), 1); renderJobs(ctx); };
+    if (ds) ds.onclick = () => { try { j.w && j.w.terminate(); } catch (e) { /* abaikan */ } if (j.state === 'queued') j.state = 'cancelled'; jobs.splice(jobs.indexOf(j), 1); renderJobs(ctx); };
     const cc = el.querySelector('[data-cancel]');
     if (cc) cc.onclick = () => { j.w.postMessage({ cmd: 'cancel' }); };
   });

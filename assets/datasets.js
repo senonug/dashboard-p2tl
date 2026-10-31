@@ -3,8 +3,9 @@ const norm = (s) => String(s ?? '').trim().toUpperCase().replace(/\s+/g, ' ');
 
 export const DATASETS = {
   pemeriksaan: { label: 'Data Pemeriksaan P2TL', table: 'pemeriksaan', key: 'id_p2tl', batch: 800, mode: 'upsert' },
-  paska: { label: 'DPM Baca Paskabayar', table: 'pakai_paska', key: 'idpel,blth', batch: 4000, mode: 'replace-month' },
-  pra: { label: 'OLAP Prabayar', table: 'pakai_pra', key: 'idpel,blth', batch: 4000, mode: 'replace-month' },
+  // v1.8a: DPM & OLAP dikirim ke tabel penampung, lalu digabung ke tabel per tahun oleh f_simpan_bulan
+  paska: { label: 'DPM Baca Paskabayar', table: 'stg_paska', key: null, batch: 5000, mode: 'bulanan', cols: ['job', 'idpel', 'blth', 'tarif', 'daya', 'kwh', 'jn', 'kd'] },
+  pra: { label: 'OLAP Prabayar', table: 'stg_pra', key: null, batch: 5000, mode: 'bulanan', cols: ['job', 'idpel', 'blth', 'daya', 'kwh'] },
   dil: { label: 'Data Induk Langganan (DIL)', table: 'dil', key: 'idpel', batch: 2500, mode: 'upsert' },
   ts: { label: 'Laporan TS Terbayar', table: 'ts_bayar', key: null, batch: 1000, mode: 'replace-month' },
 };
@@ -16,7 +17,7 @@ export function detect(header) {
   if (h.has('ID_P2TL') && h.has('UPDATE_STATUS')) return 'pemeriksaan';
   if (h.has('PEMKWH') && h.has('JAMNYALA') && h.has('BLTH')) return 'paska';
   if (h.has('PEMKWH') && (h.has('TGLBAYAR') || h.has('KDSWITCHING') || h.has('RPPTL'))) return 'pra';
-  if (h.has('IDPEL') && (h.has('KET KDPEMBMETER') || h.has('STATUS DIL'))) return 'dil';
+  if (h.has('IDPEL') && (h.has('KET KDPEMBMETER') || h.has('STATUS DIL') || h.has('KET_KDPEMBMETER') || h.has('STATUS_DIL'))) return 'dil';
   if (h.has('NO AGENDA') && h.has('TOTAL P2TL')) return 'ts';
   return null;
 }
@@ -77,9 +78,20 @@ export function toIdpel(v) {
   if (/^\d(\.\d+)?e\+\d+$/i.test(s)) return String(Math.round(Number(s)));
   return s;
 }
-function toCoord(v, lo, hi) { const n = toNum(v); return n !== null && n >= lo && n <= hi ? n : null; }
-const toLat = (v) => toCoord(v, -11, 6);
-const toLon = (v) => toCoord(v, 94, 142);
+// Koordinat: menerima angka biasa (-6.2495), koma desimal (-6,2495), atau angka tanpa titik desimal
+// seperti di DIL baru (-62495022222 → -6.2495022222; 1068333722222 → 106.8333722222).
+function toCoord(v, lo, hi, intDigits) {
+  const n = toNum(v);
+  if (n === null) return null;
+  if (n >= lo && n <= hi) return n;
+  const digits = String(v).trim().replace(/^[-+]/, '').replace(/[.,\s]/g, '');
+  if (!/^\d+$/.test(digits) || digits.length <= intDigits) return null;
+  const neg = /^\s*-/.test(String(v)) || n < 0;
+  const x = Number(digits.slice(0, intDigits) + '.' + digits.slice(intDigits)) * (neg ? -1 : 1);
+  return x >= lo && x <= hi ? x : null;
+}
+const toLat = (v) => toCoord(v, -11, 6, 1);
+const toLon = (v) => toCoord(v, 94, 142, 3);
 function toBlth(v) {
   const n = toInt(v);
   if (n && n > 199000 && n < 210000) return n;
@@ -97,8 +109,11 @@ export function golOf(status) {
 export function makeMapper(ds, header) {
   const idx = {};
   header.forEach((h, i) => { const k = norm(h); if (k && idx[k] === undefined) idx[k] = i; });
-  const g = (row, name) => { const i = idx[name]; return i === undefined ? undefined : row[i]; };
-  const missing = (REQUIRED[ds] || []).filter((c) => idx[c] === undefined);
+  // nama kolom boleh memakai spasi atau garis bawah (DIL baru: STATUS_DIL, KOORDINAT_X, ...)
+  const pos = (name) => (idx[name] !== undefined ? idx[name] : idx[name.replace(/ /g, '_')]);
+  const has = (name) => pos(name) !== undefined;
+  const g = (row, name) => { const i = pos(name); return i === undefined ? undefined : row[i]; };
+  const missing = (REQUIRED[ds] || []).filter((c) => !has(c));
   const sensitive = header.map(norm).filter((h) => SENSITIVE.includes(h));
 
   if (ds === 'pemeriksaan') {
@@ -110,7 +125,8 @@ export function makeMapper(ds, header) {
       const th = toInt(g(row, 'TAHUN_MTR_SDH')) || toInt(g(row, 'TAHUN_MTR_BLM'));
       return {
         id_p2tl: id, idpel: toIdpel(g(row, 'IDPEL')), nama: toText(g(row, 'NAMA')), tarif: toText(g(row, 'TARIF')),
-        daya: toInt(g(row, 'DAYA')), gardu: toText(g(row, 'GARDU')), lat: toLat(g(row, 'LATITUDE')), lon: toLon(g(row, 'LONGITUDE')),
+        daya: toInt(g(row, 'DAYA')), gardu: toText(g(row, 'GARDU')), // file sejak Agu 2026 memakai LOKASI_LAT_PTG / LOKASI_LON_PTG (koordinat dari HP petugas)
+        lat: toLat(g(row, 'LATITUDE')) ?? toLat(g(row, 'LOKASI_LAT_PTG')), lon: toLon(g(row, 'LONGITUDE')) ?? toLon(g(row, 'LOKASI_LON_PTG')),
         sesuai_merk: toText(g(row, 'SESUAI_MERK')), merk_meter: toText(g(row, 'MERK_METER')), update_status: toText(g(row, 'UPDATE_STATUS')),
         gol: golOf(g(row, 'UPDATE_STATUS')), peruntukan: toText(g(row, 'PERUNTUKAN')), catatan: toText(g(row, 'CATATAN')),
         pemutusan: toText(g(row, 'PEMUTUSAN')), kwh_ts: toNum(g(row, 'KWH_TS')) || 0, rupiah_ts: toNum(g(row, 'RUPIAH_TS')) || 0,
@@ -129,7 +145,7 @@ export function makeMapper(ds, header) {
       const idpel = toIdpel(g(row, 'IDPEL')); const blth = toBlth(g(row, 'BLTH'));
       if (!idpel || !blth) return null;
       return { idpel, blth, tarif: toText(g(row, 'TARIF')), daya: toInt(g(row, 'DAYA')), kwh: toNum(g(row, 'PEMKWH')),
-        jam_nyala: toNum(g(row, 'JAMNYALA')), kdbaca: toText(g(row, 'KDBACA2')) || toText(g(row, 'KDBACA')), tgl_baca: toDate(g(row, 'TGLBACA')) };
+        jn: toNum(g(row, 'JAMNYALA')), kd: toText(g(row, 'KDBACA2')) || toText(g(row, 'KDBACA')) };
     } };
   }
   if (ds === 'pra') {
@@ -147,12 +163,16 @@ export function makeMapper(ds, header) {
       if (!idpel) return null;
       const pemb = toText(g(row, 'KET KDPEMBMETER'));
       const th = toInt(g(row, 'TAHUN TERA METER KWH'));
-      return { idpel, nama: toText(g(row, 'NAMA')) === '0' ? null : toText(g(row, 'NAMA')), alamat: toText(g(row, 'NAMAPNJ')),
+      const nama = toText(g(row, 'NAMA'));
+      const r = { idpel, nama: nama === '0' ? null : nama, alamat: toText(g(row, 'NAMAPNJ')),
         tarif: toText(g(row, 'TARIF')), daya: toInt(g(row, 'DAYA')), layanan: pemb && /PRABAYAR/i.test(pemb) ? 'PRABAYAR' : 'PASKABAYAR',
         pembmeter: pemb, status: toText(g(row, 'STATUS DIL')), gardu: toText(g(row, 'NAMA GARDU')),
         kecamatan: toText(g(row, 'NAMA KECAMATAN')), kelurahan: toText(g(row, 'NAMA KELURAHAN')), merk: toText(g(row, 'MERK METER KWH')),
-        tahun_tera: th && th > 1950 && th < 2100 ? th : null, lat: toLat(g(row, 'KOORDINAT X')), lon: toLon(g(row, 'KOORDINAT Y')),
-        keperluan: toText(g(row, 'KET KEPERLUAN')), tgl_nyala: toDate(g(row, 'TGLNYALA PB')) };
+        tahun_tera: th && th > 1950 && th < 2100 ? th : null, lat: toLat(g(row, 'KOORDINAT X')), lon: toLon(g(row, 'KOORDINAT Y')) };
+      // kolom yang tidak ada di file tidak dikirim, agar isi lama di database tidak terhapus
+      if (has('KET KEPERLUAN')) r.keperluan = toText(g(row, 'KET KEPERLUAN'));
+      if (has('TGLNYALA PB')) r.tgl_nyala = toDate(g(row, 'TGLNYALA PB'));
+      return r;
     } };
   }
   if (ds === 'ts') {
@@ -183,5 +203,9 @@ export function track(st, rec) {
   if (st.ds === 'pemeriksaan') st.status[rec.gol] = (st.status[rec.gol] || 0) + 1;
   if (st.ds === 'dil') st.status[rec.status || '-'] = (st.status[rec.status || '-'] || 0) + 1;
   if (st.ds === 'ts') st.status[rec.golongan || '-'] = (st.status[rec.golongan || '-'] || 0) + 1;
-  if (st.ds === 'paska') st.status[rec.kdbaca || '-'] = (st.status[rec.kdbaca || '-'] || 0) + 1;
+  if (st.ds === 'paska') st.status[rec.kd || '-'] = (st.status[rec.kd || '-'] || 0) + 1;
+  if ((st.ds === 'dil' || st.ds === 'pemeriksaan') && rec.lat !== null && rec.lon !== null) st.extra.koord = (st.extra.koord || 0) + 1;
+  if (st.ds === 'dil') {
+    if (rec.nama && rec.nama.includes('*')) st.extra.masking = (st.extra.masking || 0) + 1;
+  }
 }

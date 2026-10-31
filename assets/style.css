@@ -388,3 +388,14 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .exec-cbar > div:first-child { font-size: 9.5px; margin-bottom: 3px; } .exec-cbar .stack i { height: 13px !important; }
 }
 .exec-per .legend { margin-top: 10px; }
+/* v1.8a: kalender data pemakaian */
+.tbl.cal th, .tbl.cal td { text-align: center; padding: 6px 4px; min-width: 64px; }
+.tbl.cal td:first-child, .tbl.cal th:first-child { min-width: 46px; }
+.calx b { display: block; font-size: 12px; font-variant-numeric: tabular-nums; }
+.calx small { display: block; font-size: 10.5px; color: var(--muted); }
+.calx .cal0 { color: var(--muted); }
+.calok { background: var(--good-bg); }
+.calwarn { background: var(--warn-bg); }
+.calwarn small { color: var(--warn); font-weight: 700; }
+.calbad { background: var(--crit-bg); }
+.calbad small { color: var(--crit); font-weight: 700; }

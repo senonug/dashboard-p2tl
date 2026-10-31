@@ -56,7 +56,7 @@ export async function cakupan(ctx) {
     ${st('DIPERIKSA', num(k.uniq), `cakupan ${pct(ratio(k.uniq_dil, k.aktif), 2)}`, `${num(k.uniq)} pelanggan diperiksa pada periode ini, ${num(k.uniq_dil)} cocok dengan DIL aktif`)}
     ${st('GARDU TERSENTUH', `${num(k.gardu_ins)}/${num(k.gardu_total)}`, `${pct(ratio(k.gardu_ins, k.gardu_total), 0)} gardu`, 'Gardu yang punya minimal satu pemeriksaan pada periode ini')}
     ${st('BELUM TERSENTUH', num(k.cells_zero), `${num(k.pop_zero)} pelanggan`, 'Sel grid ±500 m tanpa pemeriksaan pada periode ini', '#B86E00')}
-    ${st('CALON TO', rk.blth ? num(risk.length) : '–', rk.blth ? `${num(nT)} tinggi · ${num(nS)} sedang` : (rk.err ? 'gagal dimuat' : 'skor belum dihitung'), rk.blth ? `Skor dari pemakaian ${blthLabel(rk.blth)}; pelanggan yang diperiksa 90 hari terakhir tidak dihitung` : '', RISK_C.Tinggi)}
+    ${st('CALON TO', rk.blth ? num(risk.length) : '–', rk.blth ? `${num(nT)} tinggi · ${num(nS)} sedang` : (rk.err ? 'gagal dimuat' : 'skor belum dihitung'), rk.blth ? `Skor dari ${[rk.blth_pas ? `DPM ${blthLabel(rk.blth_pas)}` : '', rk.blth_pra ? `OLAP ${blthLabel(rk.blth_pra)}` : ''].filter(Boolean).join(' & ') || `pemakaian ${blthLabel(rk.blth)}`}; pelanggan yang diperiksa 90 hari terakhir tidak dihitung` : '', RISK_C.Tinggi)}
   </div>`;
 
   const layBtn = (key, lbl, sw) => `<button type="button" class="pktog${PK.lay[key] ? ' on' : ''}" data-lay="${key}" aria-pressed="${PK.lay[key]}">${sw}${lbl}</button>`;
