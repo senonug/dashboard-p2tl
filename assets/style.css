@@ -399,3 +399,29 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .calwarn small { color: var(--warn); font-weight: 700; }
 .calbad { background: var(--crit-bg); }
 .calbad small { color: var(--crit); font-weight: 700; }
+/* v1.8b: Peta Kerja */
+.pkopts2 { flex: 1 1 100%; padding-top: 2px; }
+.pkchip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: 16px; border: 1px solid #D5D9E0; background: #fff; color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; }
+.pkchip small { font-family: var(--mono); font-size: 11.5px; font-weight: 500; color: var(--muted); }
+.pkchip .dot { opacity: .35; }
+.pkchip.on { background: var(--pri-l); border-color: #86b6ef; color: var(--pri-d); }
+.pkchip.on .dot { opacity: 1; }
+.pkgrp .pklink { margin-left: 4px; font-size: 12.5px; }
+.pkbusy { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 650; display: flex; align-items: center; gap: 8px; background: rgba(255,255,255,.96); border: 1px solid var(--line); border-radius: 18px; padding: 6px 14px; font-size: 13px; box-shadow: 0 2px 8px rgba(14,23,38,.12); }
+.pkbusy .spin { width: 14px; height: 14px; border-width: 2px; margin: 0; }
+.pkbusy[hidden] { display: none; }
+.pkclu { background: none; border: 0; }
+.pkclu span { display: flex; align-items: center; justify-content: center; border-radius: 50%; color: #fff; font: 700 11.5px var(--font); border: 2px solid #0E1726; box-shadow: 0 0 0 3px rgba(255,255,255,.75); opacity: .92; transform: translate(-50%, -50%); position: absolute; left: 50%; top: 50%; }
+.pkscroll { max-height: 320px; overflow: auto; }
+.pkctl { position: absolute; top: 10px; right: 10px; z-index: 640; background: rgba(255,255,255,.96); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 2px 8px rgba(14,23,38,.1); }
+.pkctl .lab { display: block; font-size: 10.5px; font-weight: 700; color: var(--muted); letter-spacing: .04em; margin-bottom: 3px; }
+.pkctl small { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+.pk .seg.sm button { height: 28px; padding: 0 9px; font-size: 12px; border-radius: 6px; }
+.pkbusy { top: auto; bottom: 22px; }
+@media (max-width: 760px) { .pkctl { position: static; margin-bottom: 8px; } }
+.pkctl { padding: 6px 8px; gap: 4px; }
+.pkctlr { display: flex; align-items: center; gap: 6px; }
+.pkctlr .lab { display: inline; margin: 0; min-width: 40px; }
+.pkctlr small { margin: 0; white-space: nowrap; }
+.pk .seg.sm { flex-wrap: nowrap; gap: 3px; }
+.pk .seg.sm button { height: 26px; padding: 0 8px; }
