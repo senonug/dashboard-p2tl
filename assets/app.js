@@ -62,23 +62,32 @@ export function clearCache() { S.cache.clear(); }
 export async function refreshMeta() { S.meta = await rpc('f_meta', {}, { cache: false }); return S.meta; }
 
 // ---------- auth ----------
+// Layar masuk: bawaan cukup sandi tim (akun bersama, peran viewer); admin/pengunggah lewat "Masuk dengan email"
+let loginMode = 'sandi';
 function loginView(msg = '') {
+  const tim = loginMode === 'sandi' && CONFIG.sharedEmail;
   root.innerHTML = `<div class="login"><form id="lf" autocomplete="on">
     <div class="brand" style="padding:0"><div class="logo">${icon(IC.bolt, 18, '#fff')}</div><div><b style="color:var(--ink)">Dashboard P2TL</b><span style="color:var(--muted)">${esc(CONFIG.unit)}</span></div></div>
-    <div><h1 style="font-size:20px">Masuk</h1><p class="ph-sub">Gunakan akun yang sudah didaftarkan admin.</p></div>
-    <div class="fld"><label for="em">EMAIL</label><input id="em" type="email" required autocomplete="username"></div>
-    <div class="fld"><label for="pw">KATA SANDI</label><input id="pw" type="password" required autocomplete="current-password"></div>
+    <div><h1 style="font-size:20px">Masuk</h1><p class="ph-sub">${tim ? 'Masukkan sandi tim P2TL.' : 'Gunakan akun email yang sudah didaftarkan admin.'}</p></div>
+    ${tim ? `<input type="text" name="username" value="${esc(CONFIG.sharedEmail)}" autocomplete="username" hidden>`
+      : '<div class="fld"><label for="em">EMAIL</label><input id="em" type="email" required autocomplete="username"></div>'}
+    <div class="fld"><label for="pw">${tim ? 'SANDI' : 'KATA SANDI'}</label><input id="pw" type="password" required autocomplete="current-password"${tim ? ' autofocus' : ''}></div>
     <div class="err" id="lerr">${esc(msg)}</div>
     <button class="btn pri" type="submit" style="height:42px;justify-content:center">Masuk</button>
-    <button class="btn" type="button" id="forgot" style="justify-content:center">Lupa kata sandi</button>
+    ${tim ? '' : '<button class="btn" type="button" id="forgot" style="justify-content:center">Lupa kata sandi</button>'}
+    ${CONFIG.sharedEmail ? `<button class="pklink" type="button" id="lmode" style="align-self:center">${tim ? 'Masuk dengan email (admin / pengunggah)' : '‹ Masuk dengan sandi tim'}</button>` : ''}
   </form></div>`;
   document.getElementById('lf').onsubmit = async (e) => {
     e.preventDefault();
     const err = document.getElementById('lerr'); err.textContent = 'Memeriksa…';
-    const { error } = await sb.auth.signInWithPassword({ email: document.getElementById('em').value.trim(), password: document.getElementById('pw').value });
-    if (error) err.textContent = error.message === 'Invalid login credentials' ? 'Email atau kata sandi salah.' : error.message;
+    const email = tim ? CONFIG.sharedEmail : document.getElementById('em').value.trim();
+    const { error } = await sb.auth.signInWithPassword({ email, password: document.getElementById('pw').value });
+    if (error) err.textContent = error.message === 'Invalid login credentials' ? (tim ? 'Sandi salah.' : 'Email atau kata sandi salah.') : error.message;
   };
-  document.getElementById('forgot').onclick = async () => {
+  const lm = document.getElementById('lmode');
+  if (lm) lm.onclick = () => { loginMode = tim ? 'email' : 'sandi'; loginView(); };
+  const fg = document.getElementById('forgot');
+  if (fg) fg.onclick = async () => {
     const em = document.getElementById('em').value.trim();
     const err = document.getElementById('lerr');
     if (!em) { err.textContent = 'Isi email terlebih dahulu.'; return; }
