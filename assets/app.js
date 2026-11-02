@@ -6,16 +6,17 @@ import { dataPage } from './data.js';
 const sb = window.supabase.createClient(CONFIG.url, CONFIG.key, { auth: { persistSession: true, autoRefreshToken: true } });
 const root = document.getElementById('root');
 
+// Menu utama (sering dipakai) lalu kelompok "Lainnya" (v1.8c)
 const NAV = [
   ['ringkasan', 'Ringkasan Eksekutif', IC.sum, 'Gambaran cepat untuk SPV hingga Manager: volume, hasil, dan nilai pemeriksaan pada periode terpilih.'],
   ['temuan', 'Analisis Temuan', IC.bars, 'Jenis pelanggaran, nilai TS, dan profil pelanggan yang paling sering terkena temuan.'],
-  ['kinerja', 'Kinerja Regu & Petugas', IC.team, 'Produktivitas (volume) dan efektivitas (hit rate, nilai TS) tiap regu dan petugas.'],
   ['cakupan', 'Peta Kerja', IC.map, 'Satu peta untuk menyusun sasaran lapangan: area yang belum disisir, titik temuan, calon TO berisiko, dan pelanggan di sekitar satu lokasi.'],
   ['risiko', 'Profil Risiko & Calon TO', IC.risk, 'Gabungan pemakaian (DPM, OLAP prabayar), DIL, dan hasil pemeriksaan untuk menyusun Target Operasi.'],
-  ['pembayaran', 'Realisasi Pembayaran TS', IC.pay, 'Seberapa banyak nilai temuan yang benar-benar tertagih: tunai, angsuran, dan sisa piutang.'],
-  ['recovery', 'Recovery Pemakaian', IC.up, 'Apakah pemakaian pelanggan naik setelah ditertibkan? Ukuran dampak jangka panjang P2TL.'],
-  ['detail', 'Detail Temuan', IC.list, 'Tabel lengkap temuan yang bisa dicari dan difilter untuk tindak lanjut.'],
   ['data', 'Kelola & Unggah Data', IC.upload, 'Unggah pembaruan data dari mana saja. File divalidasi di browser lalu disimpan ke database bersama.'],
+  ['kinerja', 'Kinerja Regu & Petugas', IC.team, 'Produktivitas (volume) dan efektivitas (hit rate, nilai TS) tiap regu dan petugas.', 'lain'],
+  ['pembayaran', 'Realisasi Pembayaran TS', IC.pay, 'Seberapa banyak nilai temuan yang benar-benar tertagih: tunai, angsuran, dan sisa piutang.', 'lain'],
+  ['recovery', 'Recovery Pemakaian', IC.up, 'Apakah pemakaian pelanggan naik setelah ditertibkan? Ukuran dampak jangka panjang P2TL.', 'lain'],
+  ['detail', 'Detail Temuan', IC.list, 'Tabel lengkap temuan yang bisa dicari dan difilter untuk tindak lanjut.', 'lain'],
 ];
 
 // ---------- state ----------
@@ -105,7 +106,7 @@ function shell() {
   <nav class="side" aria-label="Menu dashboard">
     <div class="brand"><div class="logo">${icon(IC.bolt, 18, '#fff')}</div><div><b>Dashboard P2TL</b><span>${esc(CONFIG.unit)}</span></div>
       <button class="btn sm burger" id="burger" aria-label="Buka menu" style="margin-left:auto">${icon(IC.menu, 16)}</button></div>
-    <div class="nav" id="nav">${NAV.map(([k, t, ic]) => `<a href="#/${k}" data-k="${k}">${icon(ic)}<span>${t}</span></a>`).join('')}</div>
+    <div class="nav" id="nav">${NAV.map(([k, t, ic, , g], i) => `${g === 'lain' && NAV[i - 1][4] !== 'lain' ? '<div class="navh">LAINNYA</div>' : ''}<a href="#/${k}" data-k="${k}"${g === 'lain' ? ' class="lain"' : ''}>${icon(ic)}<span>${t}</span></a>`).join('')}</div>
     <div class="side-foot"><div>${icon(IC.user, 13, '#9FB0C6')} ${esc(S.me?.nama || S.session.user.email)}</div><div>Peran: ${esc(role || '-')}</div>
       <div id="lastup"></div><button type="button" id="logout">Keluar</button></div>
   </nav>

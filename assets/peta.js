@@ -42,10 +42,20 @@ export async function cakupan(ctx) {
   if (pkMap) { try { PK.view = [pkMap.getCenter(), pkMap.getZoom()]; pkMap.remove(); } catch (e) { /* abaikan */ } pkMap = null; }
   const fitKey = `${ctx.f.kec || ''}|${ctx.f.layanan || ''}`;
   const startZ = PK.view && PK.fitKey === fitKey ? PK.view[1] : 12;
-  const kOf = (z) => (PK.lvl === 'auto' ? autoK(z) : PK.lvl);
-  const grids = new Map(); // k → Promise hasil f_grid (periode & filter ini)
-  const loadGrid = (k) => { if (!grids.has(k)) grids.set(k, ctx.rpc('f_grid', ctx.params({ p_k: k }))); return grids.get(k); };
-  const k0 = kOf(startZ);
+  // sel 100 m hanya dimuat saat cukup dekat (zoom ≥ 14), agar data yang dikirim tetap kecil
+  const kOf = (z) => { const k = PK.lvl === 'auto' ? autoK(z) : PK.lvl; return k === 2 && z < 14 ? 5 : k; };
+  const grids = new Map(); // k → Promise hasil f_grid (periode & filter ini); sel 100 m dimuat per area layar
+  let box2 = null; // batas area yang sudah dimuat untuk sel 100 m
+  const loadGrid = (k, bb = null) => {
+    if (k === 2 && bb) {
+      const key = `2:${bb.getSouth().toFixed(4)},${bb.getWest().toFixed(4)}`;
+      if (!grids.has(key)) grids.set(key, ctx.rpc('f_grid', ctx.params({ p_k: 2, p_s: bb.getSouth(), p_w: bb.getWest(), p_n: bb.getNorth(), p_e: bb.getEast() })));
+      return grids.get(key);
+    }
+    if (!grids.has(k)) grids.set(k, ctx.rpc('f_grid', ctx.params({ p_k: k })));
+    return grids.get(k);
+  };
+  const k0 = kOf(startZ) === 2 ? 5 : kOf(startZ); // sel 100 m baru dimuat setelah peta tahu batas layarnya
   let d, g0;
   try { [d, g0] = await Promise.all([ctx.rpc('f_cakupan', ctx.params()), loadGrid(k0)]); }
   catch (e) {
@@ -62,11 +72,20 @@ export async function cakupan(ctx) {
     const kk = g.k;
     const cells = g.cells.map((c) => ({ i: c[0], j: c[1], k: kk, pop: c[2], ins: c[3], tm: c[4], pra: c[5], lat: +c[6], lon: +c[7], kel: c[8], kec: c[9],
       last: c[10], gardu: c[11] || null, ever: c[12], rt: c[13], rs: c[14], cov: ratio(c[3], c[2]), evp: ratio(c[12], c[2]) }));
-    return { k: kk, cells, cellBy: new Map(cells.map((c) => [`${c.i},${c.j}`, c])), risk: g.risk.map((r) => ({ i: r[0], j: r[1], t: r[2], s: r[3], lat: +r[4], lon: +r[5] })),
+    return { k: kk, box: !!g.box, cells, cellBy: new Map(cells.map((c) => [`${c.i},${c.j}`, c])), risk: g.risk.map((r) => ({ i: r[0], j: r[1], t: r[2], s: r[3], lat: +r[4], lon: +r[5] })),
       zero: g.zero, dataMin: g.data_min };
   };
   G = mkGrid(g0);
   const pts = (d.points || []).map((p) => ({ lat: +p[0], lon: +p[1], gol: p[2], idpel: p[3], nama: p[4], rp: p[5], tgl: p[6] })).filter((p) => p.lat && p.lon);
+  let sesPts = null, sesLoad = null; // titik Sesuai: dimuat hanya bila chip Sesuai dinyalakan
+  const loadSesuai = () => {
+    if (sesPts || sesLoad) return sesLoad;
+    busy(true, 'Memuat pemeriksaan Sesuai…');
+    sesLoad = ctx.rpc('f_titik_sesuai', ctx.params()).then((r) => {
+      sesPts = r.pts.map((p) => ({ lat: +p[0], lon: +p[1], gol: 'Sesuai', idpel: p[2], tgl: p[3] })).filter((p) => p.lat && p.lon);
+    }).catch(() => { sesPts = []; }).finally(() => { busy(false); if (live()) drawPeriksa(); });
+    return sesLoad;
+  };
   const golN = d.gol_n || {};
   const riskTot = () => G.risk.reduce((a, r) => [a[0] + r.t, a[1] + r.s], [0, 0]);
   const area = () => (G.cells.length ? [[Math.min(...G.cells.map((c) => c.j)) * c5(G.k), Math.min(...G.cells.map((c) => c.i)) * c5(G.k)],
@@ -78,9 +97,9 @@ export async function cakupan(ctx) {
   // ---------- kerangka halaman ----------
   const st = (id, lbl, v, foot, tip, col = '') => `<div class="pkst" id="${id}" data-tip="${esc(tip)}"><span class="lbl">${lbl}</span><b class="mono"${col ? ` style="color:${col}"` : ''}>${v}</b><small>${foot}</small></div>`;
   const kpiZero = () => (PK.warna === 'belum'
-    ? st('pkz', 'BELUM PERNAH DIPERIKSA', num(G.zero.never_plg), `${num(G.zero.never_cells)} sel ${LVL[G.k]} kosong sama sekali`, `Pelanggan aktif yang belum pernah diperiksa sejak ${sinceTxt()} s.d. akhir periode`, '#6a4bc4')
-    : st('pkz', 'BELUM TERSENTUH', num(G.zero.cells), `sel ${LVL[G.k]} · ${num(G.zero.pop)} pelanggan`, `Sel grid ${LVL[G.k]} tanpa pemeriksaan pada periode ini`, '#B86E00'));
-  const kpiRisk = () => { const [t, s] = riskTot(); return st('pkr', 'CALON TO', num(t + s), `${num(t)} tinggi · ${num(s)} sedang`, 'Skor dari DPM/OLAP terbaru; pelanggan yang diperiksa 90 hari terakhir tidak dihitung', RISK_C.Tinggi); };
+    ? st('pkz', 'BELUM PERNAH DIPERIKSA', num(G.zero.never_plg), `${num(G.zero.never_cells)} sel ${LVL[G.k]} kosong sama sekali${G.box ? ' (area layar)' : ''}`, `Pelanggan aktif yang belum pernah diperiksa sejak ${sinceTxt()} s.d. akhir periode${G.box ? ' — dihitung untuk area peta yang sedang dimuat' : ''}`, '#6a4bc4')
+    : st('pkz', 'BELUM TERSENTUH', num(G.zero.cells), `sel ${LVL[G.k]}${G.box ? ' di layar' : ''} · ${num(G.zero.pop)} pelanggan`, `Sel grid ${LVL[G.k]} tanpa pemeriksaan pada periode ini${G.box ? ' (area peta yang sedang dimuat)' : ''}`, '#B86E00'));
+  const kpiRisk = () => { const [t, s] = riskTot(); return st('pkr', 'CALON TO', num(t + s), `${num(t)} tinggi · ${num(s)} sedang${G.box ? ' (layar)' : ''}`, 'Skor dari DPM/OLAP terbaru; pelanggan yang diperiksa 90 hari terakhir tidak dihitung', RISK_C.Tinggi); };
   const kp = `<div class="pkstat">
     <div class="pkst pkper"><span class="lbl">PERIODE</span><b>${esc(rentang(ctx.f.from, ctx.f.to))}</b><button type="button" class="pklink" id="pkper">Ubah filter ↑</button></div>
     ${st('pka', 'PELANGGAN AKTIF', num(k.aktif), `${num(k.pra)} prabayar`, `${num(k.pra)} prabayar · ${num(k.aktif - k.pra)} paskabayar (DIL)`)}
@@ -208,7 +227,7 @@ export async function cakupan(ctx) {
       c.rect = L().rectangle(cellBounds(c), cellStyle(c)).bindTooltip(() => cellTip(c), { sticky: true, className: 'pktip' })
         .on('click', (e) => { hit(); if (PK.klik === 'cari') nearAt(e.latlng); else selectCell(c, false); }).addTo(gridL);
     }
-    const now = ctx.el.querySelector('#pklvlnow'); if (now) now.textContent = PK.lvl === 'auto' ? `= ${LVL[G.k]}` : 'm';
+    const now = ctx.el.querySelector('#pklvlnow'); if (now) now.textContent = PK.lvl === 'auto' ? `= ${LVL[G.k]}` : PK.lvl !== G.k ? `100 m mulai zoom 14` : 'm';
   }
   const restyle = () => { for (const c of G.cells) c.rect && c.rect.setStyle(cellStyle(c)); };
   const refreshKpi = () => {
@@ -220,13 +239,16 @@ export async function cakupan(ctx) {
   let gridSeq = 0;
   async function ensureLevel() {
     const want = kOf(m.getZoom());
-    if (want === G.k) return;
+    const vb = m.getBounds();
+    if (want === G.k && (want !== 2 || (box2 && box2.contains(vb)))) return;
     const seq = ++gridSeq;
+    const bb = want === 2 ? vb.pad(0.5) : null;
     busy(true, `Memuat sel ${LVL[want]}…`);
     let g;
-    try { g = await loadGrid(want); } catch (e) { busy(false); grids.delete(want); return; }
+    try { g = await loadGrid(want, bb); } catch (e) { busy(false); grids.clear(); return; }
     busy(false);
     if (!live() || seq !== gridSeq) return;
+    if (want === 2) box2 = bb;
     G = mkGrid(g);
     drawGrid(); applyLayers(); refreshKpi(); drawRisk();
     if (PK.panel === 'intro') renderPanel();
@@ -235,11 +257,12 @@ export async function cakupan(ctx) {
   // titik pemeriksaan menurut golongan yang dipilih
   function drawPeriksa() {
     perL.clearLayers();
-    for (const p of pts) {
+    if (PK.gol.has('Sesuai') && !sesPts) loadSesuai();
+    for (const p of (PK.gol.has('Sesuai') && sesPts ? pts.concat(sesPts) : pts)) {
       if (!PK.gol.has(p.gol)) continue;
       const isT = p.gol !== 'Sesuai';
       L().circleMarker([p.lat, p.lon], { radius: isT ? 5.5 : 3.2, color: '#fff', weight: isT ? 1.2 : 0.6, fillColor: golCol(p.gol), fillOpacity: isT ? 0.95 : 0.8 })
-        .bindTooltip(`${esc(title(p.nama || '-'))} · ${esc(p.gol)}${p.tgl ? ' · ' + tglPendek(p.tgl) : ''}`, { className: 'pktip' })
+        .bindTooltip(`${p.nama ? esc(title(p.nama)) : 'IDPEL ' + esc(p.idpel || '-')} · ${esc(p.gol)}${p.tgl ? ' · ' + tglPendek(p.tgl) : ''}`, { className: 'pktip' })
         .on('click', () => { hit(); selectPoint({ kind: 'periksa', ...p }); }).addTo(perL);
     }
   }
@@ -272,8 +295,8 @@ export async function cakupan(ctx) {
     for (const p of riskPts || []) {
       if (!PK.rkat[p.kat]) continue;
       L().circleMarker([p.lat, p.lon], { radius: p.kat === 'Tinggi' ? 7.5 : 6, color: '#0E1726', weight: 2, fillColor: RISK_C[p.kat], fillOpacity: 1 })
-        .bindTooltip(`${esc(title(p.nama || '-'))} · skor ${num(p.skor)} (${p.kat})`, { className: 'pktip' })
-        .on('click', () => { hit(); selectPoint({ kind: 'risiko', ...p }); }).addTo(riskL);
+        .bindTooltip(`IDPEL ${esc(p.idpel)} · skor ${num(p.skor)} (${p.kat})`, { className: 'pktip' })
+        .on('click', () => { hit(); selectRisk(p); }).addTo(riskL);
     }
     renderLegend();
   }
@@ -289,12 +312,12 @@ export async function cakupan(ctx) {
       busy(true, 'Memuat calon TO…');
       let r;
       try { r = await ctx.rpc('f_risiko_titik', { p_from: ctx.f.from, p_to: ctx.f.to, p_kec: ctx.f.kec || null, p_layanan: ctx.f.layanan || null,
-        p_s: bb.getSouth(), p_w: bb.getWest(), p_n: bb.getNorth(), p_e: bb.getEast(), p_limit: 4000 }); }
+        p_s: bb.getSouth(), p_w: bb.getWest(), p_n: bb.getNorth(), p_e: bb.getEast(), p_limit: 1500 }); }
       catch (e) { busy(false); return; }
       busy(false);
       if (!live() || seq !== riskSeq || m.getZoom() < Z_PT) return;
       riskBox = bb;
-      riskPts = r.pts.map((p) => ({ lat: +p[0], lon: +p[1], idpel: p[2], nama: p[3], skor: p[4], kat: p[5], tarif: p[6], daya: p[7], layanan: p[8], gardu: p[9], alamat: p[10] }));
+      riskPts = r.pts.map((p) => ({ lat: +p[0], lon: +p[1], idpel: p[2], skor: p[3], kat: katOf(p[3]) }));
       riskInfo = r.n > riskPts.length ? `${num(riskPts.length)} skor tertinggi dari ${num(r.n)} di area ini — perbesar untuk melihat semua` : '';
       drawRiskPts();
     }, 250);
@@ -311,7 +334,7 @@ export async function cakupan(ctx) {
   };
   m.on('click', (e) => { if (Date.now() - hitAt < 80) return; if (PK.klik === 'cari') nearAt(e.latlng); });
   m.on('zoomend', () => { restyle(); ensureLevel(); drawRisk(); });
-  m.on('moveend', () => { if (m.getZoom() >= Z_PT) drawRisk(); });
+  m.on('moveend', () => { if (m.getZoom() >= Z_PT) drawRisk(); if (G.k === 2) ensureLevel(); });
 
   // ---------- legenda ----------
   function renderLegend() {
@@ -377,12 +400,12 @@ export async function cakupan(ctx) {
     let body = '<div class="loading" style="padding:16px"><span class="spin"></span>Memuat pelanggan & pemeriksaan di sel ini…</div>';
     if (det) {
       const top = det.pts.filter((q) => q[10] >= 35).sort((a, b) => b[10] - a[10]);
-      const belum = det.pts.filter((q) => !q[9]).length;
+      const belum = det.n_belum12 ?? det.pts.filter((q) => !q[9]).length;
       const per = det.periksa;
       const perN = {}; for (const q of per) perN[q[3]] = (perN[q[3]] || 0) + 1;
       body = `<div class="pk2"><div><div class="lbl">GARDU TERBANYAK</div><div class="pktx">${det.gardu.map((g) => `${esc(g.k || '-')} (${num(g.n)})`).join(', ') || '–'}</div></div>
           <div><div class="lbl">TARIF</div><div class="pktx">${det.tarif.map((g) => `${esc(g.k || '-')} (${num(g.n)})`).join(', ') || '–'}</div></div></div>
-        <div class="pksub">${num(belum)} pelanggan belum diperiksa 12 bulan terakhir.</div>
+        <div class="pksub">${num(belum)} dari ${num(det.n_pop ?? det.pts.length)} pelanggan belum diperiksa 12 bulan terakhir.${det.full === false ? ' Di peta hanya ditampilkan pelanggan berisiko atau yang pernah diperiksa; perbesar ke sel 100 m untuk melihat semua.' : ''}</div>
         <div><div class="lbl" style="margin-bottom:8px">PEMERIKSAAN DI SEL INI · ${num(det.n_periksa)} (${esc(rentang(ctx.f.from, ctx.f.to))})</div>
         ${per.length ? `<div class="pkwhy" style="margin:0 0 8px">${GOLS.filter((g) => perN[g]).map((g) => `<span class="chip" style="background:#fff;border:1px solid var(--line)">${dot(golCol(g))} ${g} ${num(perN[g])}</span>`).join('')}</div>
           <div class="pklist pkscroll">${per.slice(0, 300).map((q, ix) => `<button type="button" class="pkrow" data-pi="${ix}"><span class="pkrm"><b>${dot(golCol(q[3]))} ${esc(title(q[2] || '-'))}</b><small class="mono">${esc(q[1] || '-')} · ${tglPendek(q[4])} · Regu ${esc(q[7] ?? '-')}${q[8] ? ' · ' + esc(title(q[8])) : ''}</small></span><span class="pkrr">${q[3] === 'Sesuai' ? '<span class="chip">Sesuai</span>' : golChip(q[3])}</span></button>`).join('')}</div>
@@ -412,8 +435,8 @@ export async function cakupan(ctx) {
         <button type="button" class="btn pri" id="pknear">${icon(IC.search, 16, '#fff')}Pelanggan dalam ${PK.rad} m</button></div>
         <div class="pksub">Detail lengkap pemeriksaan ada di halaman <a href="#/detail">Detail Temuan</a>.</div>`;
     }
-    return head('CALON TO', esc(title(p.nama || '-')), `<span class="mono">IDPEL ${esc(p.idpel)}</span>`, chipKat(p.kat) + ' ' + skorBadge(p.skor)) +
-      `<div class="pktx">${esc(p.alamat || '-')}</div>
+    return head('CALON TO', p.loading ? 'Memuat…' : esc(title(p.nama || '-')), `<span class="mono">IDPEL ${esc(p.idpel)}</span>`, chipKat(p.kat) + ' ' + skorBadge(p.skor)) +
+      `<div class="pktx">${esc(p.alamat || (p.loading ? '' : '-'))}</div>
       <div class="pkkv">${stat('TARIF / DAYA', `${esc(p.tarif || '-')} / ${num(p.daya)}`)}${stat('LAYANAN', esc(title(p.layanan || '-')))}${stat('GARDU', esc(p.gardu || '-'))}${stat('SKOR', num(p.skor), RISK_C[p.kat])}</div>
       <div class="pkbtns"><a class="btn" href="${gmaps(p.lat, p.lon)}" target="_blank" rel="noopener">${icon(IC.ext, 16)}Google Maps</a>
       <button type="button" class="btn pri" id="pknear">${icon(IC.search, 16, '#fff')}Pelanggan dalam ${PK.rad} m</button></div>
@@ -454,8 +477,14 @@ export async function cakupan(ctx) {
     const nb = panel.querySelector('#pknear'); if (nb) nb.onclick = () => nearAt({ lat: PK.ptSel.lat, lng: PK.ptSel.lon }, `${PK.ptSel.idpel || ''} · ${title(PK.ptSel.nama || '')}`, PK.ptSel.idpel);
     const zb = panel.querySelector('#pkzoom'); if (zb) zb.onclick = () => { const c = PK.cell && PK.cell.c; if (c) m.fitBounds(cellBounds(c), { padding: [24, 24], maxZoom: 19 }); };
     const xb = panel.querySelector('#pkx');
-    if (xb) xb.onclick = () => {
-      const c = PK.cell.c, det = PK.det; if (!det) return;
+    if (xb) xb.onclick = async () => {
+      const c = PK.cell.c; let det = PK.det; if (!det) return;
+      if (det.full === false) {
+        xb.disabled = true; xb.lastChild.textContent = 'Menyiapkan…';
+        try { det = await ctx.rpc('f_cell2', { p_i: c.i, p_j: c.j, p_k: c.k, p_from: ctx.f.from, p_to: ctx.f.to, p_full: true }, { cache: false }); }
+        catch (e) { xb.disabled = false; xb.lastChild.textContent = 'Ekspor Excel'; return; }
+        xb.disabled = false; xb.lastChild.textContent = 'Ekspor Excel';
+      }
       const row = (q) => ({ IDPEL: q[0], Nama: q[1], Alamat: q[11], Tarif: q[2], Daya: q[3], Layanan: q[4], Gardu: q[5], 'Skor risiko': q[10], Kategori: katOf(q[10]) || (q[10] ? 'Rendah' : ''),
         'Diperiksa terakhir (12 bln)': q[9] || '', 'Hasil periode ini': q[8] || '', Lat: q[6], Lon: q[7], 'Google Maps': q[6] ? gmaps(q[6], q[7]) : '' });
       const calon = det.pts.filter((q) => !q[9]).sort((a, b) => (b[10] || 0) - (a[10] || 0) || (b[3] || 0) - (a[3] || 0));
@@ -508,6 +537,15 @@ export async function cakupan(ctx) {
     PK.ptSel = p; PK.panel = 'pt'; PK.pt = null; PK.near = null;
     if (!keepCell) { PK.cell = null; PK.det = null; cellL.clearLayers(); }
     srchL.clearLayers(); flash(p.lat, p.lon);
+    renderPanel();
+  }
+  // calon TO: rincian pelanggan dimuat saat diklik
+  async function selectRisk(p) {
+    selectPoint({ kind: 'risiko', ...p, loading: true });
+    let d0 = null;
+    try { d0 = await ctx.rpc('f_calon', { p_idpel: p.idpel }); } catch (e) { /* tampilkan seadanya */ }
+    if (!live() || !PK.ptSel || PK.ptSel.idpel !== p.idpel) return;
+    PK.ptSel = { kind: 'risiko', ...p, ...(d0 || {}), loading: false };
     renderPanel();
   }
   function pickResult(r) {
@@ -580,7 +618,7 @@ export async function cakupan(ctx) {
   box.querySelectorAll('[data-lvl]').forEach((b) => b.onclick = () => {
     PK.lvl = b.dataset.lvl === 'auto' ? 'auto' : Number(b.dataset.lvl);
     box.querySelectorAll('[data-lvl]').forEach((x) => x.classList.toggle('on', x === b));
-    ensureLevel(); const now = box.querySelector('#pklvlnow'); if (now) now.textContent = PK.lvl === 'auto' ? `= ${LVL[G.k]}` : 'm';
+    ensureLevel(); const now = box.querySelector('#pklvlnow'); if (now) now.textContent = PK.lvl === 'auto' ? `= ${LVL[G.k]}` : PK.lvl !== G.k ? `100 m mulai zoom 14` : 'm';
   });
   box.querySelectorAll('[data-warna]').forEach((b) => b.onclick = () => {
     PK.warna = b.dataset.warna;

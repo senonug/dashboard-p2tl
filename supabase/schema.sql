@@ -88,6 +88,7 @@ alter table pemeriksaan add column rp_ts_ok numeric generated always as (case wh
 create index if not exists pemeriksaan_tgl_idx on pemeriksaan (tgl);
 create index if not exists pemeriksaan_idpel_idx on pemeriksaan (idpel);
 create index if not exists pemeriksaan_agenda_idx on pemeriksaan (no_agenda);
+create index if not exists pemeriksaan_regu_idx on pemeriksaan (regu);
 
 create table if not exists dil (
   idpel       text primary key,
@@ -318,12 +319,14 @@ end $$;
 -- Pemeriksaan pada rentang + filter umum (dipakai semua halaman)
 create or replace function f_base(p_from date, p_to date, p_regu int, p_kec text, p_layanan text)
 returns setof pemeriksaan
-language sql stable security definer set search_path = public as $$
-  select p.* from pemeriksaan p
-  left join dil d on d.idpel = p.idpel
+-- v1.8c: tanpa security definer / set search_path agar bisa "dilebur" ke kueri pemanggil (jauh lebih cepat),
+-- dan filter kecamatan memakai EXISTS sehingga DIL tidak dibaca bila kecamatan tidak dipilih.
+-- Fungsi ini hanya dipanggil dari fungsi security definer lain (tidak lewat API).
+language sql stable as $$
+  select p.* from public.pemeriksaan p
   where p.tgl between p_from and p_to
     and (p_regu is null or p.regu = p_regu)
-    and (p_kec is null or d.kecamatan = p_kec)
+    and (p_kec is null or exists (select 1 from public.dil d where d.idpel = p.idpel and d.kecamatan = p_kec))
     and (p_layanan is null or p.jenislayanan = p_layanan)
 $$;
 
@@ -337,11 +340,12 @@ begin
     'me', my_role(),
     'periksa_min', (select min(tgl) from pemeriksaan),
     'periksa_max', (select max(tgl) from pemeriksaan),
-    'n_periksa', (select count(*) from pemeriksaan),
-    'regu', (select coalesce(json_agg(rg order by rg), '[]') from (select distinct regu rg from pemeriksaan where regu is not null) x),
+    -- tanpa membaca seluruh tabel pemeriksaan: cukup tahu ada/tidaknya data, dan daftar regu lewat indeks
+    'n_periksa', (select count(*) from (select 1 from pemeriksaan limit 1) x),
+    'regu', (with recursive r as (select min(regu) v from pemeriksaan
+                                  union all select (select min(regu) from pemeriksaan where regu > r.v) from r where r.v is not null)
+             select coalesce(json_agg(v order by v), '[]') from r where v is not null),
     'kecamatan', (select coalesce(json_agg(k order by n desc), '[]') from (select kecamatan k, sum(n) n from dil_sel where kecamatan is not null group by 1 having sum(n) > 500) x),
-    'dil_n', (select count(*) from dil),
-    'dil_snapshot', (select max(snapshot) from dil),
     'paska_blth', (select coalesce(json_agg(blth order by blth), '[]') from bulan_data where dataset = 'paska' and status = 'ok'),
     'pra_blth', (select coalesce(json_agg(blth order by blth), '[]') from bulan_data where dataset = 'pra' and status = 'ok'),
     'ts_min', (select min(tgl_register) from ts_bayar),
@@ -362,7 +366,7 @@ begin
   perform guard();
   with b as (select * from f_base(p_from, p_to, p_regu, p_kec, p_layanan)),
   c as (select * from f_base(coalesce(p_cmp_from, '1900-01-01'), coalesce(p_cmp_to, '1900-01-01'), p_regu, p_kec, p_layanan)),
-  aktif as (select count(*) n from dil where status = 'AKTIF' and (p_kec is null or kecamatan = p_kec)
+  aktif as (select coalesce(sum(n), 0) n from dil_sel where (p_kec is null or kecamatan = p_kec)
             and (p_layanan is null or layanan = p_layanan))
   select json_build_object(
     'kpi', (select json_build_object(
@@ -451,6 +455,11 @@ alter table dil_sel enable row level security;  -- tanpa policy: hanya dibaca le
 create or replace function fdiv(a int, k int) returns int
 language sql immutable parallel safe as $$ select floor(a::numeric / k)::int $$;
 
+-- Ringkasan angka DIL untuk Kelola Data (v1.8c)
+create table if not exists dil_info (n integer, aktif integer, snapshot text, masking integer);
+alter table dil_info enable row level security;
+revoke all on dil_info from anon;
+
 -- Ringkasan DIL per kotak 0,0005° (±55 m) untuk sel 500/250/100 m (v1.8b)
 create table if not exists dil_sel_h (
   fx integer, fy integer, kecamatan text, layanan text, n integer, slat double precision, slon double precision
@@ -474,6 +483,13 @@ begin
   select floor(lon / 0.0005)::int, floor(lat / 0.0005)::int, kecamatan, layanan, count(*), sum(lat), sum(lon)
   from dil where status = 'AKTIF' and lat between -6.6 and -6.1 and lon between 106.6 and 107.0
   group by 1, 2, 3, 4;
+  -- ringkasan DIL untuk Kelola Data (agar halaman itu tidak membaca seluruh DIL)
+  delete from dil_info where true;
+  insert into dil_info (n, aktif, snapshot, masking)
+  select count(*), count(*) filter (where status = 'AKTIF'),
+         (select snapshot from dil where snapshot is not null group by 1 order by count(*) desc limit 1),
+         count(*) filter (where position('*' in coalesce(nama, '')) > 0)
+  from dil;
   analyze dil_sel; analyze dil_sel_h;
   return n;
 end $$;
@@ -510,27 +526,61 @@ begin
          on i.k is not distinct from p.k and i.kec is not distinct from p.kec) x),
     'gol_n', (select coalesce(json_object_agg(gol, n), '{}') from (select gol, count(*) n from bl where lat is not null group by 1) x),
     'sesuai_semua', v_all,
-    'points', (select coalesce(json_agg(json_build_array(round(lat::numeric, 6), round(lon::numeric, 6), gol, idpel, nama, rupiah_ts, tgl)), '[]') from (
-       select * from bl where gol <> 'Sesuai' and lat is not null
-       union all
-       (select * from bl where gol = 'Sesuai' and lat is not null order by md5(id_p2tl) limit case when v_all then null else 4000 end)) x)
+    -- hanya temuan; titik Sesuai dimuat terpisah (f_titik_sesuai) saat chip Sesuai dinyalakan
+    'points', (select coalesce(json_agg(json_build_array(round(lat::numeric, 5), round(lon::numeric, 5), gol, idpel, nama, rupiah_ts, tgl)), '[]') from
+       bl where gol <> 'Sesuai' and lat is not null)
   ) into r;
   return r;
 end $$;
 
 -- ---------- Peta Kerja v1.8b: sel bertingkat, isi sel, calon TO per layar ----------
-create or replace function f_grid(p_from date, p_to date, p_regu int default null, p_kec text default null, p_layanan text default null, p_k int default 10)
+create or replace function f_titik_sesuai(p_from date, p_to date, p_regu int default null, p_kec text default null, p_layanan text default null)
 returns json
 language plpgsql stable security definer set search_path = public as $$
-declare r json; v_min int;
+declare r json; v_all boolean;
+begin
+  perform guard();
+  v_all := p_to - p_from <= 92;   -- periode ≤ 3 bulan: semua; selebihnya sampel 4.000
+  with b as (select * from f_base(p_from, p_to, p_regu, p_kec, p_layanan) where gol = 'Sesuai'),
+  bl as (select b.id_p2tl, b.idpel, b.tgl, coalesce(b.lat, d.lat) lat, coalesce(b.lon, d.lon) lon
+         from b left join dil d on d.idpel = b.idpel and b.lat is null)
+  select json_build_object('semua', v_all, 'pts', coalesce(json_agg(json_build_array(round(lat::numeric, 5), round(lon::numeric, 5), idpel, tgl)), '[]'))
+  into r from (select * from bl where lat is not null order by md5(id_p2tl) limit case when v_all then null else 4000 end) x;
+  return r;
+end $$;
+
+create or replace function f_calon(p_idpel text) returns json
+language plpgsql stable security definer set search_path = public as $$
+declare r json;
+begin
+  perform guard();
+  select json_build_object('idpel', s.idpel, 'nama', s.nama, 'alamat', s.alamat, 'tarif', s.tarif, 'daya', s.daya, 'layanan', s.layanan,
+                           'gardu', s.gardu, 'kelurahan', s.kelurahan, 'jn', s.jn, 'kwh', s.kwh, 'kd', s.kd, 'beli', s.beli, 'prev_k', s.prev_k, 'blth', s.blth)
+  into r from skor_dasar s where s.idpel = p_idpel;
+  return r;
+end $$;
+
+create or replace function f_grid(p_from date, p_to date, p_regu int default null, p_kec text default null, p_layanan text default null, p_k int default 10,
+                                  p_s double precision default null, p_w double precision default null, p_n double precision default null, p_e double precision default null)
+returns json
+language plpgsql stable security definer set search_path = public as $$
+declare r json; v_min int; v_box boolean; fx0 int; fx1 int; fy0 int; fy1 int;
 begin
   perform guard();
   if p_k not in (2, 5, 10) then raise exception 'Ukuran sel tidak dikenal'; end if;
   v_min := case p_k when 10 then 30 when 5 then 10 else 3 end;
+  -- batas layar (dipakai untuk sel 100 m agar hanya area yang terlihat yang dikirim)
+  v_box := p_s is not null and p_w is not null and p_n is not null and p_e is not null;
+  if v_box then
+    fx0 := floor(p_w / 0.0005)::int; fx1 := floor(p_e / 0.0005)::int; fy0 := floor(p_s / 0.0005)::int; fy1 := floor(p_n / 0.0005)::int;
+  else
+    fx0 := -2147483647; fx1 := 2147483647; fy0 := -2147483647; fy1 := 2147483647;
+  end if;
   with b as (select * from f_base(p_from, p_to, p_regu, p_kec, p_layanan)),
   bi as (select idpel, bool_or(gol <> 'Sesuai') tm from b group by idpel),
   s as materialized (select fdiv(fx, p_k) i, fdiv(fy, p_k) j, layanan, n, slat, slon from dil_sel_h
-                     where (p_kec is null or kecamatan = p_kec) and (p_layanan is null or layanan = p_layanan)),
+                     where (p_kec is null or kecamatan = p_kec) and (p_layanan is null or layanan = p_layanan)
+                       and fx between fx0 and fx1 and fy between fy0 and fy1),
   cp as (select i, j, sum(n) pop, coalesce(sum(n) filter (where layanan = 'PRABAYAR'), 0) pra, sum(slat) / sum(n) lat, sum(slon) / sum(n) lon
          from s group by i, j having sum(n) >= v_min),
   -- tiap pelanggan yang pernah diperiksa s.d. akhir periode (+ apakah diperiksa / ada temuan pada periode)
@@ -542,6 +592,7 @@ begin
           from ev join dil d on d.idpel = ev.idpel
           where d.status = 'AKTIF' and (p_kec is null or d.kecamatan = p_kec) and (p_layanan is null or d.layanan = p_layanan)
             and d.lat between -6.6 and -6.1 and d.lon between 106.6 and 107.0
+            and (not v_box or (d.lon between p_w - 0.001 and p_e + 0.001 and d.lat between p_s - 0.001 and p_n + 0.001))
           group by 1, 2),
   -- label (kelurahan, kecamatan, gardu dominan) dari sel 500 m induknya
   ckel as (select distinct on (gx, gy) gx, gy, kelurahan kel, kecamatan kec from (
@@ -555,6 +606,7 @@ begin
                 s.skor0 + case when g.gardu is not null then 5 else 0 end skor
          from skor_dasar s left join gtem g on g.gardu = s.gardu
          where s.skor0 >= 30 and s.lat between -6.6 and -6.1 and s.lon between 106.6 and 107.0
+           and (not v_box or (s.lon between p_w - 0.001 and p_e + 0.001 and s.lat between p_s - 0.001 and p_n + 0.001))
            and (p_kec is null or s.kecamatan = p_kec) and (p_layanan is null or s.layanan = p_layanan)
            and not exists (select 1 from hist h where h.idpel = s.idpel)),
   crk as (select i, j, count(*) filter (where skor >= 60) t, count(*) filter (where skor >= 35 and skor < 60) s, avg(lat) lat, avg(lon) lon
@@ -566,10 +618,10 @@ begin
     left join ckel ck on ck.gx = fdiv(cp.i * p_k, 10) and ck.gy = fdiv(cp.j * p_k, 10)
     left join cgar cg on cg.gx = fdiv(cp.i * p_k, 10) and cg.gy = fdiv(cp.j * p_k, 10))
   select json_build_object(
-    'k', p_k,
+    'k', p_k, 'box', v_box,
     'data_min', (select min(tgl) from pemeriksaan),
-    'cells', (select coalesce(json_agg(json_build_array(i, j, pop, ins, tm, pra, round(lat::numeric, 6), round(lon::numeric, 6), kel, kec, last, gardu, ever, rt, rs)), '[]') from cells),
-    'risk', (select coalesce(json_agg(json_build_array(i, j, t, s, round(lat::numeric, 6), round(lon::numeric, 6))), '[]') from crk),
+    'cells', (select coalesce(json_agg(json_build_array(i, j, pop, ins, tm, pra, round(lat::numeric, 5), round(lon::numeric, 5), kel, kec, last, gardu, ever, rt, rs)), '[]') from cells),
+    'risk', (select coalesce(json_agg(json_build_array(i, j, t, s, round(lat::numeric, 5), round(lon::numeric, 5))), '[]') from crk),
     'zero', (select json_build_object('cells', count(*) filter (where ins = 0), 'pop', coalesce(sum(pop) filter (where ins = 0), 0),
                                       'never_cells', count(*) filter (where ever = 0), 'never_pop', coalesce(sum(pop) filter (where ever = 0), 0),
                                       'never_plg', coalesce(sum(greatest(pop - ever, 0)), 0)) from cells)
@@ -577,12 +629,14 @@ begin
   return r;
 end $$;
 
-create or replace function f_cell2(p_i int, p_j int, p_k int, p_from date, p_to date) returns json
+create or replace function f_cell2(p_i int, p_j int, p_k int, p_from date, p_to date, p_full boolean default null) returns json
 language plpgsql stable security definer set search_path = public as $$
-declare r json; g0 int; g1 int; h0 int; h1 int;
+declare r json; g0 int; g1 int; h0 int; h1 int; v_full boolean;
 begin
   perform guard();
   if p_k not in (2, 5, 10) then raise exception 'Ukuran sel tidak dikenal'; end if;
+  -- sel 100 m: semua pelanggan dikirim; sel 250/500 m: hanya yang berisiko atau pernah diperiksa 12 bulan (sisanya dihitung)
+  v_full := coalesce(p_full, p_k = 2);
   -- sel 500 m (kolom gx/gy ber-indeks) yang menaungi sel ini, ±1 untuk batas pembulatan
   g0 := fdiv(p_i * p_k, 10) - 1; g1 := fdiv((p_i + 1) * p_k, 10) + 1;
   h0 := fdiv(p_j * p_k, 10) - 1; h1 := fdiv((p_j + 1) * p_k, 10) + 1;
@@ -618,7 +672,11 @@ begin
     'gardu', (select coalesce(json_agg(x order by x.n desc), '[]') from (select gardu k, count(*) n from a group by 1 order by 2 desc limit 5) x),
     'tarif', (select coalesce(json_agg(x order by x.n desc), '[]') from (select tarif k, count(*) n from a group by 1 order by 2 desc limit 5) x),
     'risk', (select json_build_object('t', count(*) filter (where skor >= 60), 's', count(*) filter (where skor >= 35 and skor < 60)) from a),
-    'pts', (select coalesce(json_agg(json_build_array(idpel, nama, tarif, daya, layanan, gardu, round(lat::numeric, 6), round(lon::numeric, 6), gol, last_periksa, skor, alamat)), '[]') from a),
+    'full', v_full,
+    'n_pop', (select count(*) from a),
+    'n_belum12', (select count(*) from a where last_periksa is null),
+    'pts', (select coalesce(json_agg(json_build_array(idpel, nama, tarif, daya, layanan, gardu, round(lat::numeric, 6), round(lon::numeric, 6), gol, last_periksa, skor, alamat)), '[]')
+            from a where v_full or skor >= 35 or last_periksa is not null or gol is not null),
     'periksa', (select coalesce(json_agg(json_build_array(id_p2tl, idpel, nama, gol, tgl, round(lat::numeric, 6), round(lon::numeric, 6), regu, petugas, kwh_ts, tarif, daya, pemutusan)
                 order by (gol = 'Sesuai'), tgl desc), '[]') from (select * from pm order by (gol = 'Sesuai'), tgl desc limit 3000) x),
     'n_periksa', (select count(*) from pm)
@@ -627,7 +685,7 @@ begin
 end $$;
 
 create or replace function f_risiko_titik(p_from date, p_to date, p_kec text, p_layanan text,
-                                          p_s double precision, p_w double precision, p_n double precision, p_e double precision, p_limit int default 4000)
+                                          p_s double precision, p_w double precision, p_n double precision, p_e double precision, p_limit int default 1500)
 returns json
 language plpgsql stable security definer set search_path = public as $$
 declare r json;
@@ -644,8 +702,9 @@ begin
   rk as (select *, case when skor >= 60 then 'Tinggi' else 'Sedang' end kat from uc where skor >= 35)
   select json_build_object(
     'n', (select count(*) from rk),
-    'pts', (select coalesce(json_agg(json_build_array(round(lat::numeric, 6), round(lon::numeric, 6), idpel, nama, skor, kat, tarif, daya, layanan, gardu, alamat)), '[]') from (
-        select * from rk order by skor desc, daya desc nulls last limit greatest(1, least(p_limit, 6000))) x)
+    -- ringkas: koordinat, IDPEL, skor; rincian pelanggan dimuat saat titik diklik (f_calon)
+    'pts', (select coalesce(json_agg(json_build_array(round(lat::numeric, 5), round(lon::numeric, 5), idpel, skor)), '[]') from (
+        select * from rk order by skor desc, daya desc nulls last limit greatest(1, least(p_limit, 3000))) x)
   ) into r;
   return r;
 end $$;
@@ -1017,9 +1076,7 @@ begin
     'pemeriksaan', json_build_object('n', (select count(*) from pemeriksaan), 'min', (select min(tgl) from pemeriksaan), 'max', (select max(tgl) from pemeriksaan)),
     'paska', (select coalesce(json_agg(x order by x.blth), '[]') from (select blth, n, status, file, oleh, waktu, n_baru, n_hilang from bulan_data where dataset = 'paska') x),
     'pra', (select coalesce(json_agg(x order by x.blth), '[]') from (select blth, n, status, file, oleh, waktu, n_baru, n_hilang from bulan_data where dataset = 'pra') x),
-    'dil', json_build_object('n', (select count(*) from dil), 'aktif', (select count(*) from dil where status = 'AKTIF'),
-                             'snapshot', (select snapshot from dil where snapshot is not null group by 1 order by count(*) desc limit 1),
-                             'masking', (select count(*) from dil where position('*' in coalesce(nama, '')) > 0)),
+    'dil', (select json_build_object('n', n, 'aktif', aktif, 'snapshot', snapshot, 'masking', masking) from dil_info limit 1),
     'ts', json_build_object('n', (select count(*) from ts_bayar), 'min', (select min(tgl_register) from ts_bayar), 'max', (select max(tgl_register) from ts_bayar)),
     'months', json_build_object(
        'pemeriksaan', (select coalesce(json_agg(x order by x.blth), '[]') from (select blth_of(tgl) blth, count(*) n from pemeriksaan where tgl is not null group by 1) x),
@@ -1068,7 +1125,7 @@ begin
     delete from pakai_pra_th where tahun = v_y and ada = 0;
     delete from bulan_data where dataset = 'pra' and blth = p_blth;
   elsif p_dataset = 'ts' then delete from ts_bayar where blth_of(tgl_register) = p_blth; get diagnostics n = row_count;
-  elsif p_dataset = 'dil' then delete from dil where true; get diagnostics n = row_count; delete from dil_sel where true;
+  elsif p_dataset = 'dil' then delete from dil where true; get diagnostics n = row_count; delete from dil_sel where true; delete from dil_sel_h where true; delete from dil_info where true;
   else raise exception 'dataset tidak dikenal'; end if;
   insert into upload_log (dataset, filename, periode, n_rows, info, uploaded_by)
   values (p_dataset, '(dihapus)', coalesce(p_blth::text, 'semua'), -n, '{"hapus": true}', me_email());
@@ -1370,7 +1427,7 @@ declare f record;
 begin
   for f in select p.oid::regprocedure sig from pg_proc p join pg_namespace n on n.oid = p.pronamespace
            where n.nspname = 'public' and p.proname in ('f_meta','f_ringkasan','f_kinerja','f_cakupan','f_cell','f_peta_risiko','f_risiko','f_pembayaran',
-             'f_recovery','f_detail','f_usage_hist','f_datasets','f_clear_month','f_after_upload','f_log_delete','f_hapus_data','f_cari','f_sekitar','f_hitung_skor','f_capaian','f_target_list','f_set_target','f_simpan_bulan','f_selesai_bulan','f_buang_stg','f_grid','f_cell2','f_risiko_titik','my_role','is_member','can_upload','is_admin')
+             'f_recovery','f_detail','f_usage_hist','f_datasets','f_clear_month','f_after_upload','f_log_delete','f_hapus_data','f_cari','f_sekitar','f_hitung_skor','f_capaian','f_target_list','f_set_target','f_simpan_bulan','f_selesai_bulan','f_buang_stg','f_grid','f_cell2','f_risiko_titik','f_titik_sesuai','f_calon','my_role','is_member','can_upload','is_admin')
   loop
     execute format('revoke all on function %s from public, anon', f.sig);
     execute format('grant execute on function %s to authenticated', f.sig);

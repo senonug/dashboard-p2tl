@@ -425,3 +425,6 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .pkctlr small { margin: 0; white-space: nowrap; }
 .pk .seg.sm { flex-wrap: nowrap; gap: 3px; }
 .pk .seg.sm button { height: 26px; padding: 0 8px; }
+/* v1.8c: kelompok menu Lainnya */
+.navh { margin: 14px 12px 4px; padding-top: 10px; border-top: 1px solid rgba(199,210,224,.18); font-size: 10.5px; font-weight: 700; letter-spacing: .08em; color: #8193AB; }
+.nav a.lain { min-height: 36px; padding: 7px 12px; font-size: 13px; color: #AEBBCD; }
