@@ -40,27 +40,46 @@ function bucketDaily(daily, from, to) {
 }
 
 
-// Komposisi P1–P4 dari Laporan TS terbayar (tanggal register dalam periode)
-function golTsCard(d, ctx) {
-  const MAIN = ['P1', 'P2', 'P3', 'P4', 'K1', 'K2'];
-  const all = d.gol_ts || [];
-  const g = all.filter((r) => MAIN.includes(r.gol));
-  const other = all.filter((r) => !MAIN.includes(r.gol));
-  const ts = d.ts || {};
-  const sub = 'Sumber: Laporan TS terbayar, berdasarkan tanggal register dalam periode terpilih.';
-  if (!g.length) {
-    return card('Komposisi golongan P1–P4', sub, empty(ts.min ? `Tidak ada Laporan TS terbayar pada periode ini.<br>Data laporan TS tersedia ${rentang(ts.min, ts.max)}.` : 'Belum ada Laporan TS terbayar. Unggah di halaman Kelola Data.'));
-  }
-  const order = GOL_ORDER.filter((x) => g.find((r) => r.gol === x)).concat(g.map((r) => r.gol).filter((x) => !GOL_ORDER.includes(x)));
+// Komposisi golongan dari Laporan TS terbayar — dipakai Analisis Temuan & Realisasi Pembayaran TS (v1.8f)
+// rows: [{ gol, n, kwh, rp, tipRp? }]; urutan baku P1 → K2; tabel 5 kolom tanpa geser, daftar di layar sempit
+const GOL_STD = ['P1', 'P2', 'P3', 'P4', 'K1', 'K2'];
+const GOL_NOTE = 'Golongan "KWH" (koreksi kWh) digabung ke K2. DKRP dan UPDATEANGSURAN tidak ditampilkan. P1 ditagih berdasarkan daya, sehingga kWh-nya kosong.';
+function golKomposisi(rows, { title: ttl, sub, rpLabel = 'Rp TS', emptyMsg }) {
+  const g = rows.filter((r) => GOL_STD.includes(r.gol) && (+r.n || +r.rp || +r.kwh));
+  const info = `<span class="gkinfo" tabindex="0" data-tip="${esc(GOL_NOTE)}" aria-label="${esc(GOL_NOTE)}">ⓘ</span>`;
+  if (!g.length) return card(`${ttl} ${info}`, sub, empty(emptyMsg || 'Tidak ada Laporan TS terbayar pada periode ini'));
   const by = Object.fromEntries(g.map((r) => [r.gol, r]));
-  const totRp = sumBy(g, 'rp'), totN = sumBy(g, 'n');
-  return card('Komposisi golongan P1–P4', sub,
-    `${legend(order.map((x) => [x, GOLC[x] || '#9AA3B2']))}
-     <div><div class="lbl" style="margin-bottom:8px">Jumlah pelanggan · ${num(totN)}</div>${stack(order.map((x) => ({ l: x, v: by[x].n, c: GOLC[x] || '#9AA3B2', tip: `${x}: ${num(by[x].n)} pelanggan` })))}</div>
-     <div><div class="lbl" style="margin-bottom:8px">Nilai Rp TS · ${rp(totRp)}</div>${stack(order.map((x) => ({ l: x, v: +by[x].rp, c: GOLC[x] || '#9AA3B2', tip: `${x}: ${rp(by[x].rp)}` })))}</div>
-     ${table([{ h: 'Golongan', k: 'gol', wrapS: 1, f: (v) => `${golChip(v)}<br><small style="color:var(--muted)">${esc(GOL_DESC[v] || '')}</small>` }, { h: 'Pelanggan', k: 'n', r: 1, f: num },
-       { h: 'kWh', k: 'kwh', r: 1, f: num }, { h: 'Rp TS', k: 'rp', r: 1, f: (v) => rp(v) }, { h: 'Total P2TL', k: 'total', r: 1, f: (v) => rp(v) }], order.map((x) => by[x]))}
-     <p class="sub">Golongan "KWH" (koreksi kWh) digabung ke K2. DKRP dan UPDATEANGSURAN tidak ditampilkan.</p>`);
+  const order = GOL_STD.filter((x) => by[x]);
+  const totN = sumBy(g, 'n'), totK = sumBy(g, 'kwh'), totR = sumBy(g, 'rp');
+  const sh = (v, t) => (t ? (+v / t) * 100 : 0);
+  const pctTxt = (v, t) => (t ? pct(sh(v, t), sh(v, t) < 1 && v > 0 ? 1 : 0) : '–');
+  const kwhTxt = (r) => (+r.kwh ? num(r.kwh) : '–');
+  const kwhTip = (r) => (+r.kwh ? `${r.gol}: ${num(r.kwh)} kWh` : `${r.gol}: tanpa kWh (ditagih berdasarkan daya)`);
+  const rpTip = (r) => `${r.gol}: ${rp(r.rp, true)}${r.tipRp ? ' · ' + r.tipRp : ''}`;
+  // batang bertumpuk: label "P4 40%" hanya di segmen yang cukup lebar
+  const bar = (key, tot, tipF) => `<div class="stack gkbar">${order.filter((x) => +by[x][key] > 0).map((x) => {
+    const s0 = sh(by[x][key], tot);
+    return `<i data-tip="${esc(`${tipF(by[x])} (${pctTxt(by[x][key], tot)})`)}" style="flex:${(s0 / 100).toFixed(5)} 1 0;background:${GOLC[x] || '#9AA3B2'}">${s0 >= 9 ? `<span class="${s0 < 15 ? 'lo' : ''}">${x} ${pct(s0, 0)}</span>` : ''}</i>`;
+  }).join('')}</div>`;
+  const rowsT = order.map((x) => by[x]);
+  const tbl = `<div class="gktbl"><table class="tbl"><thead><tr><th scope="col">Golongan</th><th scope="col" class="r" title="Jumlah pelanggan">Plg</th><th scope="col" class="r">kWh</th><th scope="col" class="r">% kWh</th><th scope="col" class="r">${esc(rpLabel)}</th></tr></thead><tbody>
+    ${rowsT.map((r) => `<tr><td>${golChip(r.gol)}</td><td class="r mono">${num(r.n)}</td><td class="r mono" title="${esc(kwhTip(r))}">${kwhTxt(r)}</td><td class="r mono">${+r.kwh ? pctTxt(r.kwh, totK) : '–'}</td><td class="r mono" title="${esc(rpTip(r))}">${rp(r.rp)}</td></tr>`).join('')}
+    <tr class="gktot"><td>Total</td><td class="r mono">${num(totN)}</td><td class="r mono">${num(totK)}</td><td class="r mono">100%</td><td class="r mono" title="${esc(rp(totR, true))}">${rp(totR)}</td></tr></tbody></table></div>`;
+  // versi daftar untuk kartu sempit (HP): tidak ada yang terpotong / perlu digeser
+  const lst = `<div class="gklist">${rowsT.map((r) => `<div class="gkli">${golChip(r.gol)}<div><b class="mono">${+r.kwh ? num(r.kwh) + ' kWh' : 'tanpa kWh'}</b> <small>${+r.kwh ? pctTxt(r.kwh, totK) : ''}</small><br><span class="mono">${rp(r.rp)}</span> · <span class="mono">${num(r.n)}</span> plg</div></div>`).join('')}
+    <div class="gkli gktot"><span>Total</span><div><b class="mono">${num(totK)} kWh</b><br><span class="mono">${rp(totR)}</span> · <span class="mono">${num(totN)}</span> plg</div></div></div>`;
+  return card(`${ttl} ${info}`, sub,
+    `<div class="gk"><div><div class="lbl" style="margin-bottom:6px">kWh TS terbayar · ${num(totK)}</div>${totK ? bar('kwh', totK, kwhTip) : empty('Tidak ada kWh')}</div>
+     <div><div class="lbl" style="margin-bottom:6px">${esc(rpLabel)} · ${rp(totR)}</div>${bar('rp', totR, rpTip)}</div>
+     ${tbl}${lst}</div>`);
+}
+
+// Komposisi golongan di Analisis Temuan (Laporan TS terbayar, tanggal register dalam periode)
+function golTsCard(d, ctx) {
+  const ts = d.ts || {};
+  return golKomposisi((d.gol_ts || []).map((r) => ({ gol: r.gol, n: r.n, kwh: r.kwh, rp: r.rp, tipRp: `Total P2TL ${rp(r.total, true)}` })), {
+    title: 'Komposisi golongan (TS terbayar)', sub: 'Sumber: Laporan TS terbayar, berdasarkan tanggal register dalam periode terpilih.',
+    emptyMsg: ts.min ? `Tidak ada Laporan TS terbayar pada periode ini.<br>Data laporan TS tersedia ${rentang(ts.min, ts.max)}.` : 'Belum ada Laporan TS terbayar. Unggah di halaman Kelola Data.' });
 }
 
 // ======================= RINGKASAN =======================
@@ -279,7 +298,8 @@ async function pembayaran(ctx) {
   const tc = card('Tunai vs angsuran', 'Komposisi nilai Total P2TL pada periode.', stack([{ l: 'Tunai', v: +k.tunai, c: C.s1, tip: `Tunai ${rp(k.tunai)}` }, { l: 'Angsuran', v: +k.angsur, c: C.light, tip: `Angsuran ${rp(k.angsur)}` }], 32) +
     legend([[`Tunai · ${rp(k.tunai)} (${pct(ratio(k.tunai, k.total), 0)})`, C.s1], [`Angsuran · ${rp(k.angsur)} (${pct(ratio(k.angsur, k.total), 0)})`, C.light]]) +
     `<div><div class="lbl" style="margin:6px 0 8px">Umur piutang angsuran (semua data, sejak tanggal register)</div>${hbars(d.aging.map((a) => ({ l: AG[a.o], v: +a.rp, x: `· ${num(a.n)} plg` })), { fmt: (v) => rp(v), lw: 90, vw: 150 })}</div>`);
-  const gc = card('Realisasi per golongan', null, hbars(d.gol.map((g) => ({ l: g.k || '-', v: +g.rp, c: GOLC[g.k] || '#9AA3B2', x: `· ${num(g.n)} plg` })), { fmt: (v) => rp(v), lw: 50, vw: 150 }) + '<p class="sub">Golongan "KWH" digabung ke K2. DKRP dan UPDATEANGSURAN tidak ditampilkan.</p>');
+  const gc = golKomposisi(d.gol.map((g) => ({ gol: g.k, n: g.n, kwh: g.kwh, rp: g.rp })), {
+    title: 'Realisasi per golongan', sub: 'Laporan TS terbayar pada periode, berdasarkan tanggal register.', rpLabel: 'Total P2TL' });
   const dc = card('Realisasi per tanggal register', null, vbars(d.daily.map((x) => ({ l: String(+x.tgl.slice(8, 10)), v: +x.rp, tip: `${x.tgl}: ${num(x.n)} pelunasan · ${rp(x.rp)}` })), { color: C.s3, fmt: (v) => rp(v), every: 'auto' }));
   const top = card('Pembayaran terbesar', null, table([{ h: 'No. Agenda', k: 'no_agenda', f: (v) => `<span class="mono" style="font-size:12px">${esc(v)}</span>` }, { h: 'Nama', k: 'nama', f: (v) => esc(title(v)) },
     { h: 'Gol.', k: 'golongan' }, { h: 'Tarif/Daya', k: 'tarif', f: (v, r) => `${esc(v)} / ${num(r.daya)}` }, { h: 'Tgl register', k: 'tgl_register', f: tglPendek },
