@@ -1,5 +1,5 @@
 import { cakupan } from './peta.js';
-import { hitungCapaian, capaianCard, bulananCard, bayarCard, capaianNote, printHead } from './eksekutif.js';
+import { hitungCapaian, capaianCard, kumulatifCard, komposisiCard, raporCard, periodeCard, bindPeriode, capaianNotes, printHead } from './eksekutif.js';
 import { C, GOLC, GOL_ORDER, GOL_DESC, RAMP, esc, num, pct, rp, ratio, kpi, delta, card, grid, legend, empty, hbars, vbars, vstack, stack, table,
   golChip, lineChart, icon, IC, tglPendek, rentang, blthLabel, title, exportXlsx, jam } from './ui.js';
 
@@ -40,31 +40,49 @@ function bucketDaily(daily, from, to) {
 }
 
 
-// Komposisi P1–P4 dari Laporan TS terbayar (tanggal register dalam periode)
-function golTsCard(d, ctx) {
-  const MAIN = ['P1', 'P2', 'P3', 'P4', 'K1', 'K2'];
-  const all = d.gol_ts || [];
-  const g = all.filter((r) => MAIN.includes(r.gol));
-  const other = all.filter((r) => !MAIN.includes(r.gol));
-  const ts = d.ts || {};
-  const sub = 'Sumber: Laporan TS terbayar, berdasarkan tanggal register dalam periode terpilih.';
-  if (!g.length) {
-    return card('Komposisi golongan P1–P4', sub, empty(ts.min ? `Tidak ada Laporan TS terbayar pada periode ini.<br>Data laporan TS tersedia ${rentang(ts.min, ts.max)}.` : 'Belum ada Laporan TS terbayar. Unggah di halaman Kelola Data.'));
-  }
-  const order = GOL_ORDER.filter((x) => g.find((r) => r.gol === x)).concat(g.map((r) => r.gol).filter((x) => !GOL_ORDER.includes(x)));
+// Komposisi golongan dari Laporan TS terbayar — dipakai Analisis Temuan & Realisasi Pembayaran TS (v1.8f)
+// rows: [{ gol, n, kwh, rp, tipRp? }]; urutan baku P1 → K2; tabel 5 kolom tanpa geser, daftar di layar sempit
+const GOL_STD = ['P1', 'P2', 'P3', 'P4', 'K1', 'K2'];
+const GOL_NOTE = 'Golongan "KWH" (koreksi kWh) digabung ke K2. DKRP dan UPDATEANGSURAN tidak ditampilkan. P1 ditagih berdasarkan daya, sehingga kWh-nya kosong.';
+function golKomposisi(rows, { title: ttl, sub, rpLabel = 'Rp TS', emptyMsg }) {
+  const g = rows.filter((r) => GOL_STD.includes(r.gol) && (+r.n || +r.rp || +r.kwh));
+  const info = `<span class="gkinfo" tabindex="0" data-tip="${esc(GOL_NOTE)}" aria-label="${esc(GOL_NOTE)}">ⓘ</span>`;
+  if (!g.length) return card(`${ttl} ${info}`, sub, empty(emptyMsg || 'Tidak ada Laporan TS terbayar pada periode ini'));
   const by = Object.fromEntries(g.map((r) => [r.gol, r]));
-  const totRp = sumBy(g, 'rp'), totN = sumBy(g, 'n');
-  return card('Komposisi golongan P1–P4', sub,
-    `${legend(order.map((x) => [x, GOLC[x] || '#9AA3B2']))}
-     <div><div class="lbl" style="margin-bottom:8px">Jumlah pelanggan · ${num(totN)}</div>${stack(order.map((x) => ({ l: x, v: by[x].n, c: GOLC[x] || '#9AA3B2', tip: `${x}: ${num(by[x].n)} pelanggan` })))}</div>
-     <div><div class="lbl" style="margin-bottom:8px">Nilai Rp TS · ${rp(totRp)}</div>${stack(order.map((x) => ({ l: x, v: +by[x].rp, c: GOLC[x] || '#9AA3B2', tip: `${x}: ${rp(by[x].rp)}` })))}</div>
-     ${table([{ h: 'Golongan', k: 'gol', wrapS: 1, f: (v) => `${golChip(v)}<br><small style="color:var(--muted)">${esc(GOL_DESC[v] || '')}</small>` }, { h: 'Pelanggan', k: 'n', r: 1, f: num },
-       { h: 'kWh', k: 'kwh', r: 1, f: num }, { h: 'Rp TS', k: 'rp', r: 1, f: (v) => rp(v) }, { h: 'Total P2TL', k: 'total', r: 1, f: (v) => rp(v) }], order.map((x) => by[x]))}
-     <p class="sub">Golongan "KWH" (koreksi kWh) digabung ke K2. DKRP dan UPDATEANGSURAN tidak ditampilkan.</p>`);
+  const order = GOL_STD.filter((x) => by[x]);
+  const totN = sumBy(g, 'n'), totK = sumBy(g, 'kwh'), totR = sumBy(g, 'rp');
+  const sh = (v, t) => (t ? (+v / t) * 100 : 0);
+  const pctTxt = (v, t) => (t ? pct(sh(v, t), sh(v, t) < 1 && v > 0 ? 1 : 0) : '–');
+  const kwhTxt = (r) => (+r.kwh ? num(r.kwh) : '–');
+  const kwhTip = (r) => (+r.kwh ? `${r.gol}: ${num(r.kwh)} kWh` : `${r.gol}: tanpa kWh (ditagih berdasarkan daya)`);
+  const rpTip = (r) => `${r.gol}: ${rp(r.rp, true)}${r.tipRp ? ' · ' + r.tipRp : ''}`;
+  // batang bertumpuk: label "P4 40%" hanya di segmen yang cukup lebar
+  const bar = (key, tot, tipF) => `<div class="stack gkbar">${order.filter((x) => +by[x][key] > 0).map((x) => {
+    const s0 = sh(by[x][key], tot);
+    return `<i data-tip="${esc(`${tipF(by[x])} (${pctTxt(by[x][key], tot)})`)}" style="flex:${(s0 / 100).toFixed(5)} 1 0;background:${GOLC[x] || '#9AA3B2'}">${s0 >= 9 ? `<span class="${s0 < 15 ? 'lo' : ''}">${x} ${pct(s0, 0)}</span>` : ''}</i>`;
+  }).join('')}</div>`;
+  const rowsT = order.map((x) => by[x]);
+  const tbl = `<div class="gktbl"><table class="tbl"><thead><tr><th scope="col">Golongan</th><th scope="col" class="r" title="Jumlah pelanggan">Plg</th><th scope="col" class="r">kWh</th><th scope="col" class="r">% kWh</th><th scope="col" class="r">${esc(rpLabel)}</th></tr></thead><tbody>
+    ${rowsT.map((r) => `<tr><td>${golChip(r.gol)}</td><td class="r mono">${num(r.n)}</td><td class="r mono" title="${esc(kwhTip(r))}">${kwhTxt(r)}</td><td class="r mono">${+r.kwh ? pctTxt(r.kwh, totK) : '–'}</td><td class="r mono" title="${esc(rpTip(r))}">${rp(r.rp)}</td></tr>`).join('')}
+    <tr class="gktot"><td>Total</td><td class="r mono">${num(totN)}</td><td class="r mono">${num(totK)}</td><td class="r mono">100%</td><td class="r mono" title="${esc(rp(totR, true))}">${rp(totR)}</td></tr></tbody></table></div>`;
+  // versi daftar untuk kartu sempit (HP): tidak ada yang terpotong / perlu digeser
+  const lst = `<div class="gklist">${rowsT.map((r) => `<div class="gkli">${golChip(r.gol)}<div><b class="mono">${+r.kwh ? num(r.kwh) + ' kWh' : 'tanpa kWh'}</b> <small>${+r.kwh ? pctTxt(r.kwh, totK) : ''}</small><br><span class="mono">${rp(r.rp)}</span> · <span class="mono">${num(r.n)}</span> plg</div></div>`).join('')}
+    <div class="gkli gktot"><span>Total</span><div><b class="mono">${num(totK)} kWh</b><br><span class="mono">${rp(totR)}</span> · <span class="mono">${num(totN)}</span> plg</div></div></div>`;
+  return card(`${ttl} ${info}`, sub,
+    `<div class="gk"><div><div class="lbl" style="margin-bottom:6px">kWh TS terbayar · ${num(totK)}</div>${totK ? bar('kwh', totK, kwhTip) : empty('Tidak ada kWh')}</div>
+     <div><div class="lbl" style="margin-bottom:6px">${esc(rpLabel)} · ${rp(totR)}</div>${bar('rp', totR, rpTip)}</div>
+     ${tbl}${lst}</div>`);
+}
+
+// Komposisi golongan di Analisis Temuan (Laporan TS terbayar, tanggal register dalam periode)
+function golTsCard(d, ctx) {
+  const ts = d.ts || {};
+  return golKomposisi((d.gol_ts || []).map((r) => ({ gol: r.gol, n: r.n, kwh: r.kwh, rp: r.rp, tipRp: `Total P2TL ${rp(r.total, true)}` })), {
+    title: 'Komposisi golongan (TS terbayar)', sub: 'Sumber: Laporan TS terbayar, berdasarkan tanggal register dalam periode terpilih.',
+    emptyMsg: ts.min ? `Tidak ada Laporan TS terbayar pada periode ini.<br>Data laporan TS tersedia ${rentang(ts.min, ts.max)}.` : 'Belum ada Laporan TS terbayar. Unggah di halaman Kelola Data.' });
 }
 
 // ======================= RINGKASAN =======================
-let trendView = 'kwh';
 async function ringkasan(ctx) {
   const [d, cap] = await Promise.all([
     ctx.rpc('f_ringkasan', ctx.params(ctx.cmp ? { p_cmp_from: ctx.cmp[0], p_cmp_to: ctx.cmp[1] } : {})),
@@ -72,7 +90,7 @@ async function ringkasan(ctx) {
   ]);
   if (!ctx.alive()) return;
   const k = d.kpi, c = d.cmp;
-  const o = cap.err ? null : hitungCapaian(cap, ctx.f.to);
+  const o = cap.err ? null : hitungCapaian(cap, ctx.f.from, ctx.f.to);
   const hit = ratio(k.t, k.n), chit = c ? ratio(c.t, c.n) : null;
   const cmpTxt = ctx.cmp ? `<div class="note">Dibandingkan dengan ${rentang(ctx.cmp[0], ctx.cmp[1])}.</div>` : '';
   const ts = d.ts || {};
@@ -86,42 +104,15 @@ async function ringkasan(ctx) {
     kpi('TS TERBAYAR (LAPORAN TS)', ts.n ? rp(ts.total) : '–', ts.n ? `${num(ts.n)} pelanggan · Rp TS ${rp(ts.rp_ts)}` : 'Tidak ada laporan TS pada periode ini', C.s4, tc ? delta(+ts.total || 0, +tc.total || 0) : ''),
     kpi('CAKUPAN PELANGGAN AKTIF', pct(ratio(k.uniq, k.aktif), 2), `${num(k.uniq)} dari ${num(k.aktif)} pelanggan`, C.s7, c ? delta(ratio(k.uniq, k.aktif), ratio(c.uniq, k.aktif), 'up', 'pp') : ''),
   ].join(''), 160);
+  // pemeriksaan & temuan per hari (dipakai tab Detail periode dan deteksi lonjakan)
   const b = bucketDaily(d.daily, ctx.f.from, ctx.f.to);
   const med = median(b.rows.map((r) => r.t));
   const spikes = b.rows.filter((r) => r.t >= 10 && r.t > 3 * Math.max(med, 1));
-  const unit = { hari: 'per hari', minggu: 'per minggu', bulan: 'per bulan' }[b.mode];
-  // data TS terbayar per periode & golongan
-  const tsMap = new Map();
-  for (const x of d.ts_daily || []) {
-    const kk = bucketKey(x.tgl, b.mode);
-    const cur = tsMap.get(kk) || { k: kk, kwh: {}, rp: {} };
-    cur.kwh[x.gol] = (cur.kwh[x.gol] || 0) + (+x.kwh || 0);
-    cur.rp[x.gol] = (cur.rp[x.gol] || 0) + (+x.rp || 0);
-    tsMap.set(kk, cur);
-  }
-  const tsRows = [...tsMap.values()].sort((a, c2) => (a.k < c2.k ? -1 : 1));
-  const tsKeys = GOL_ORDER.slice().reverse().filter((g) => tsRows.some((r) => r.kwh[g] || r.rp[g]));
-  const tabs = [['periksa', 'Pemeriksaan & temuan'], ['kwh', 'kWh TS terbayar'], ['rp', 'Rp TS terbayar']];
-  let body;
-  if (trendView === 'periksa') {
-    body = `<div class="two"><div><div class="lbl" style="margin-bottom:6px">Pemeriksaan</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.n, tip: `${r.k}: ${num(r.n)} pemeriksaan` })), { every: 'auto' })}</div>
-     <div><div class="lbl" style="margin-bottom:6px">Temuan</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.t, c: spikes.includes(r) ? C.hl : C.s2, tip: `${r.k}: ${num(r.t)} temuan` })), { color: C.s2, every: 'auto' })}</div></div>
-     ${spikes.length ? `<div class="note"><b>Lonjakan temuan:</b> ${spikes.slice(0, 4).map((x) => `${b.mode === 'bulan' ? blthLabel(+x.k.replace('-', '')) : tglPendek(x.k)} (${num(x.t)} temuan)`).join('; ')}. Batang berwarna gelap = lebih dari 3× median.</div>` : ''}`;
-  } else {
-    const isK = trendView === 'kwh';
-    const fmt = isK ? (v) => num(v) : (v) => rp(v);
-    const tot = sumBy(d.gol_ts || [], isK ? 'kwh' : 'rp');
-    body = tsRows.length ? `<div class="lbl" style="margin-bottom:6px">${isK ? 'kWh' : 'Rp TS'} terbayar per golongan · total ${fmt(tot)}</div>` +
-      vstack(tsRows.map((r) => ({ l: bucketLabel(r.k, b.mode), parts: isK ? r.kwh : r.rp, tip: b.mode === 'bulan' ? blthLabel(+r.k.replace('-', '')) : tglPendek(r.k) })), tsKeys, GOLC, { fmt, every: 'auto', h: 170 }) +
-      legend(GOL_ORDER.filter((g) => tsKeys.includes(g)).map((g) => [g, GOLC[g]])) +
-      '<p class="sub">Sumber: Laporan TS terbayar menurut tanggal register. Golongan "KWH" digabung ke K2; DKRP dan UPDATEANGSURAN tidak ditampilkan.</p>'
-      : empty(d.ts?.min ? `Tidak ada Laporan TS terbayar pada periode ini.<br>Data tersedia ${rentang(d.ts.min, d.ts.max)}.` : 'Belum ada Laporan TS terbayar.');
-  }
-  const trend = card('Tren ' + unit + ' (periode terpilih)', null, `<div class="seg" role="tablist">${tabs.map(([kk, t]) => `<button type="button" role="tab" aria-selected="${trendView === kk}" data-tv="${kk}" class="${trendView === kk ? 'on' : ''}">${t}</button>`).join('')}</div>${body}`, 'data-print="hide"');
-  const comp = golTsCard(d, ctx).replace('<section class="card"', '<section class="card" data-print="comp"');
-  const lay = Object.fromEntries(d.layanan.map((l) => [l.k, l]));
+  const periksaHtml = b.rows.length ? `<div class="two"><div><div class="lbl" style="margin-bottom:6px">Pemeriksaan per hari</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.n, tip: `${tglPendek(r.k)}: ${num(r.n)} pemeriksaan` })), { every: 'auto' })}</div>
+     <div><div class="lbl" style="margin-bottom:6px">Temuan per hari</div>${vbars(b.rows.map((r) => ({ l: r.lab, v: r.t, c: spikes.includes(r) ? C.hl : C.s2, tip: `${tglPendek(r.k)}: ${num(r.t)} temuan` })), { color: C.s2, every: 'auto' })}</div></div>
+     ${spikes.length ? `<div class="note"><b>Lonjakan temuan:</b> ${spikes.slice(0, 4).map((x) => `${tglPendek(x.k)} (${num(x.t)} temuan)`).join('; ')}. Batang berwarna gelap = lebih dari 3× median.</div>` : ''}` : empty('Tidak ada pemeriksaan pada periode ini');
   const ins = [];
-  if (o) ins.push(capaianNote(o));
+  if (o) ins.push(...capaianNotes(o));
   const today = new Date(); const curM = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
   if (ctx.f.to >= curM + '-01') ins.push(`Laporan TS bulan berjalan masih bertambah karena temuan baru tercatat setelah register; angka kWh dan Rp TS bulan ini bersifat <b>sementara</b>.`);
   if (spikes.length && b.mode === 'hari') ins.push(`Lonjakan temuan pada ${spikes.slice(0, 3).map((x) => `${tglPendek(x.k)} (${num(x.t)})`).join(', ')}, lebih dari 3× median harian. Periksa apakah ini input yang menumpuk sebelum ditafsirkan sebagai hasil lapangan.`);
@@ -129,18 +120,20 @@ async function ringkasan(ctx) {
   if (gts.length) {
     const tot = sumBy(gts, 'rp');
     const top = gts[0];
-    ins.push(`Menurut Laporan TS terbayar, <b>${esc(top.gol)}</b> (${esc(GOL_DESC[top.gol] || '')}) menyumbang <b>${pct(ratio(top.rp, tot), 0)}</b> nilai Rp TS dari ${num(top.n)} pelanggan.`);
+    ins.push(`Pada periode ini, <b>${esc(top.gol)}</b> menyumbang <b>${pct(ratio(top.rp, tot), 0)}</b> nilai Rp TS terbayar dari ${num(top.n)} pelanggan.`);
     const perCase = [...gts].sort((a, b2) => b2.rp / b2.n - a.rp / a.n)[0];
     if (perCase.gol !== top.gol) ins.push(`Nilai per pelanggan tertinggi: <b>${esc(perCase.gol)}</b>, ${rp(perCase.rp / perCase.n)} per pelanggan.`);
   }
   if (k.anomali) ins.push(`<b>${num(k.anomali)}</b> baris pemeriksaan bernilai TS tidak wajar sehingga tidak dihitung. Perbaiki di file sumber lalu unggah ulang file bulan tersebut; baris dengan ID_P2TL sama akan diperbarui.`);
   ins.push(`Cakupan <b>${pct(ratio(k.uniq, k.aktif), 2)}</b> pelanggan aktif pada periode ini. Lihat <a href="#/risiko">Profil Risiko</a> untuk menajamkan target operasi.`);
   if (c) ins.push(`Dibanding periode pembanding: pemeriksaan ${delta(k.n, c.n)}, temuan ${delta(k.t, c.t)}, nilai TS ${delta(k.rp, c.rp)}.`);
-  const capHtml = o ? capaianCard(o) : `<div class="note warn">Blok capaian target belum tersedia (${esc(cap.err)}). Jalankan file <b>supabase/update-v1.6.sql</b> di Supabase SQL Editor.</div>`;
-  ctx.el.innerHTML = printHead(ctx, ctx.CONFIG.unit) + cmpTxt + anom + capHtml + kp + (o ? bulananCard(o) : '') + `<div class="two">${comp}${bayarCard(d)}</div>` + trend +
-    card('Catatan analis (otomatis)', null, `<ul class="ins">${ins.map((x) => `<li>${x}</li>`).join('')}</ul>`, 'data-print="notes"');
+  const capHtml = o ? capaianCard(o) : `<div class="note warn">Blok capaian target belum tersedia (${esc(cap.err)}). Jalankan file <b>supabase/update-v1.6.sql</b> dan <b>update-v1.7.sql</b> di Supabase SQL Editor.</div>`;
+  const notes = card('Catatan analis (otomatis)', null, `<ul class="ins">${ins.map((x) => `<li>${x}</li>`).join('')}</ul>`, 'data-print="notes"');
+  ctx.el.innerHTML = printHead(ctx, ctx.CONFIG.unit) + cmpTxt + anom + capHtml + kp +
+    `<div class="two">${o ? kumulatifCard(o) : ''}${komposisiCard(d, ctx)}</div>` +
+    (o ? raporCard(o) : '') + periodeCard(d, o, ctx, periksaHtml) + notes;
   const ga = ctx.el.querySelector('#goanom'); if (ga) ga.onclick = () => { DQ.ap2t = 'ANOMALI'; DQ.page = 0; };
-  ctx.el.querySelectorAll('[data-tv]').forEach((bt) => bt.onclick = () => { trendView = bt.dataset.tv; ringkasan(ctx); });
+  bindPeriode(ctx.el);
 }
 
 // ======================= TEMUAN =======================
@@ -242,19 +235,20 @@ async function risiko(ctx) {
       <div><div class="lbl" style="margin-bottom:10px">Tahun tera meter</div>${hbars(d.tera_hit.map((r) => ({ l: TERA_LBL[r.o], v: ratio(r.tm, r.n) || 0, x: `(${num(r.tm)}/${num(r.n)})` })), { fmt: (v) => pct(v), lw: 70, vw: 130 })}</div>
     </div>`);
   const pool = grid([
-    kpi('PRABAYAR TIDAK BELI TOKEN', d.has_pra ? num(d.pool.nobuy) : '–', `Sepanjang ${blthLabel(d.blth)}, belum diperiksa 90 hari`, C.s2),
-    kpi('PRABAYAR JAM NYALA <40', d.has_pra ? num(d.pool.prajn) : '–', 'kWh token ÷ kVA', C.s2),
+    kpi('PRABAYAR TIDAK BELI TOKEN', d.has_pra ? num(d.pool.nobuy) : '–', `Sepanjang ${blthLabel(d.blth_pra || d.blth)}, belum diperiksa 90 hari`, C.s2),
+    kpi('PRABAYAR JAM NYALA <40', d.has_pra ? num(d.pool.prajn) : '–', 'Rata-rata kWh token 3 bulan ÷ kVA', C.s2),
     kpi('PASKABAYAR JAM NYALA <40', d.has_pas ? num(d.pool.pasjn) : '–', 'Kode baca normal', C.s2),
     kpi('KODE BACA BERMASALAH', d.has_pas ? num(d.pool.kd) : '–', 'Meter macet / tidak ada / MCB / tinggi', C.s2),
   ].join(''), 210);
   const kat = Object.fromEntries(d.kat.map((x) => [x.k, x.n]));
+  const pemakaianTxt = [d.blth_pas ? `DPM ${blthLabel(d.blth_pas)}` : '', d.blth_pra ? `OLAP ${blthLabel(d.blth_pra)}` : ''].filter(Boolean).join(' dan ') || `pemakaian ${blthLabel(d.blth)}`;
   const w = table([{ h: 'Sinyal', k: 'a' }, { h: 'Sumber data', k: 'b' }, { h: 'Bobot', k: 'c', r: 1 }], [
-    { a: 'Jam nyala < 40 jam/bulan', b: 'DPM / OLAP prabayar', c: 35 }, { a: 'Prabayar tidak membeli token sebulan penuh', b: 'OLAP prabayar', c: 20 },
-    { a: 'Kode baca bermasalah', b: 'DPM', c: 15 }, { a: 'Pemakaian turun ≥50% vs rata-rata 3 bulan sebelumnya', b: 'DPM / OLAP (multi-bulan)', c: 15 },
-    { a: 'Daya ≥2.200 VA dengan jam nyala < 40', b: 'DIL + pemakaian', c: 10 }, { a: 'Meter tera ≤2012', b: 'DIL', c: 10 },
+    { a: 'Jam nyala < 40 jam/bulan (prabayar: rata-rata 3 bulan)', b: 'DPM / OLAP prabayar', c: 35 }, { a: 'Prabayar tidak membeli token sebulan penuh', b: 'OLAP prabayar', c: 20 },
+    { a: 'Kode baca bermasalah', b: 'DPM', c: 15 }, { a: 'Pemakaian turun ≥50% vs rata-rata 3 bulan sebelumnya (prabayar: hanya yang membeli bulan ini)', b: 'DPM / OLAP (multi-bulan)', c: 15 },
+    { a: 'Daya ≥2.200 VA dengan jam nyala < 40', b: 'DPM / OLAP', c: 10 }, { a: 'Meter tera ≤2012', b: 'DIL', c: 10 },
     { a: 'Ada temuan di gardu yang sama (6 bulan)', b: 'Pemeriksaan + DIL', c: 5 }]);
-  const wc = card('Komponen skor risiko', `Skor 0–100 per pelanggan aktif, dihitung dari pemakaian ${blthLabel(d.blth)}. Pelanggan yang sudah diperiksa dalam 90 hari terakhir dikeluarkan dari daftar.`,
-    w + `<div class="legend"><span class="chip crit">Tinggi ≥60 · ${num(kat.Tinggi || 0)}</span><span class="chip warn">Sedang 35–59 · ${num(kat.Sedang || 0)}</span><span class="chip">Rendah &lt;35 · ${num(kat.Rendah || 0)}</span></div>`);
+  const wc = card('Komponen skor risiko', `Skor 0–100 per pelanggan, dihitung dari ${pemakaianTxt}. Pelanggan yang sudah diperiksa dalam 90 hari terakhir dikeluarkan dari daftar.`,
+    w + `<div class="legend"><span class="chip crit">Tinggi ≥60 · ${num(kat.Tinggi || 0)}</span><span class="chip warn">Sedang 35–59 · ${num(kat.Sedang || 0)}</span><span class="chip" title="Perkiraan: jumlah pelanggan yang diskor dikurangi yang diperiksa 90 hari terakhir">Rendah &lt;35 · ±${num(kat.Rendah || 0)}</span></div>`);
   const chipK = (k) => `<span class="chip ${k === 'Tinggi' ? 'crit' : k === 'Sedang' ? 'warn' : ''}">${k}</span>`;
   const sigs = (r) => [r.jn !== null && r.jn < 40 ? `JN ${num(r.jn, 0)} jam` : '', r.layanan === 'PRABAYAR' && !r.beli ? 'Tidak beli token' : '',
     r.kd && r.kd !== 'NORMAL' ? title(r.kd) : '', r.prev_k > 0 && r.kwh < 0.5 * r.prev_k ? 'Turun ≥50%' : '', r.tahun_tera && r.tahun_tera <= 2012 ? `Tera ${r.tahun_tera}` : '']
@@ -266,7 +260,7 @@ async function risiko(ctx) {
       { h: 'Layanan', k: 'layanan', f: (v) => esc(title(v)) }, { h: 'Gardu', k: 'gardu' }, { h: 'Kelurahan', k: 'kelurahan', f: (v) => esc(title(v || '-')) },
       { h: 'kWh', k: 'kwh', r: 1, f: (v) => num(v, 1) }, { h: 'Sinyal', k: 'x', f: (v, r) => sigs(r) }, { h: 'Skor', k: 'skor', r: 1 }, { h: 'Risiko', k: 'kat', f: chipK },
       { h: '', k: 'lat', f: (v, r) => (r.lat ? `<a href="${gmaps(r.lat, r.lon)}" target="_blank" rel="noopener" aria-label="Lokasi di Google Maps">${icon(IC.pin, 15)}</a>` : '') }], d.list, { maxh: 560 }));
-  ctx.el.innerHTML = sig + pool + `<div class="two">${wc}${card('Cara membaca', null, `<ul class="ins"><li>Skor dihitung untuk <b>pelanggan aktif di DIL</b> memakai pemakaian bulan ${blthLabel(d.blth)}${d.has_pra ? '' : ' (data prabayar bulan ini belum ada)'}${d.has_pas ? '' : ' (data paskabayar bulan ini belum ada)'}.</li><li>Sinyal "turun ≥50%" baru aktif bila sudah ada data 3 bulan sebelumnya.</li><li>Bobot awal ini bisa dikalibrasi ulang setelah beberapa bulan, dengan membandingkan skor dengan hit rate aktual di halaman ini.</li><li>Pelanggan yang tidak membeli token bisa juga berarti rumah kosong. Pastikan di lapangan.</li></ul>`)}</div>` + lc;
+  ctx.el.innerHTML = sig + pool + `<div class="two">${wc}${card('Cara membaca', null, `<ul class="ins"><li>Skor dihitung untuk <b>pelanggan paskabayar di DPM ${d.blth_pas ? blthLabel(d.blth_pas) : '(belum ada)'}</b> dan <b>pelanggan prabayar</b> yang membeli token dalam 3 bulan s.d. ${d.blth_pra ? blthLabel(d.blth_pra) : '(OLAP belum ada)'} atau tercatat aktif di DIL. DIL dipakai untuk nama, alamat, koordinat, gardu, dan tahun tera.</li><li>Sinyal "turun ≥50%" baru aktif bila sudah ada data 3 bulan sebelumnya.</li><li>Bobot awal ini bisa dikalibrasi ulang setelah beberapa bulan, dengan membandingkan skor dengan hit rate aktual di halaman ini.</li><li>Pelanggan yang tidak membeli token bisa juga berarti rumah kosong. Pastikan di lapangan.</li></ul>`)}</div>` + lc;
   ctx.el.querySelector('#rk').onchange = (e) => { rkKat = e.target.value; risiko(ctx); };
   if (canUp) { const w = ctx.el.querySelector('#rkx'); if (w) { w.insertAdjacentHTML('beforebegin', btnSkor); bindSkor(); } }
   ctx.el.querySelector('#rkx').onclick = async (e) => {
@@ -304,7 +298,8 @@ async function pembayaran(ctx) {
   const tc = card('Tunai vs angsuran', 'Komposisi nilai Total P2TL pada periode.', stack([{ l: 'Tunai', v: +k.tunai, c: C.s1, tip: `Tunai ${rp(k.tunai)}` }, { l: 'Angsuran', v: +k.angsur, c: C.light, tip: `Angsuran ${rp(k.angsur)}` }], 32) +
     legend([[`Tunai · ${rp(k.tunai)} (${pct(ratio(k.tunai, k.total), 0)})`, C.s1], [`Angsuran · ${rp(k.angsur)} (${pct(ratio(k.angsur, k.total), 0)})`, C.light]]) +
     `<div><div class="lbl" style="margin:6px 0 8px">Umur piutang angsuran (semua data, sejak tanggal register)</div>${hbars(d.aging.map((a) => ({ l: AG[a.o], v: +a.rp, x: `· ${num(a.n)} plg` })), { fmt: (v) => rp(v), lw: 90, vw: 150 })}</div>`);
-  const gc = card('Realisasi per golongan', null, hbars(d.gol.map((g) => ({ l: g.k || '-', v: +g.rp, c: GOLC[g.k] || '#9AA3B2', x: `· ${num(g.n)} plg` })), { fmt: (v) => rp(v), lw: 50, vw: 150 }) + '<p class="sub">Golongan "KWH" digabung ke K2. DKRP dan UPDATEANGSURAN tidak ditampilkan.</p>');
+  const gc = golKomposisi(d.gol.map((g) => ({ gol: g.k, n: g.n, kwh: g.kwh, rp: g.rp })), {
+    title: 'Realisasi per golongan', sub: 'Laporan TS terbayar pada periode, berdasarkan tanggal register.', rpLabel: 'Total P2TL' });
   const dc = card('Realisasi per tanggal register', null, vbars(d.daily.map((x) => ({ l: String(+x.tgl.slice(8, 10)), v: +x.rp, tip: `${x.tgl}: ${num(x.n)} pelunasan · ${rp(x.rp)}` })), { color: C.s3, fmt: (v) => rp(v), every: 'auto' }));
   const top = card('Pembayaran terbesar', null, table([{ h: 'No. Agenda', k: 'no_agenda', f: (v) => `<span class="mono" style="font-size:12px">${esc(v)}</span>` }, { h: 'Nama', k: 'nama', f: (v) => esc(title(v)) },
     { h: 'Gol.', k: 'golongan' }, { h: 'Tarif/Daya', k: 'tarif', f: (v, r) => `${esc(v)} / ${num(r.daya)}` }, { h: 'Tgl register', k: 'tgl_register', f: tglPendek },
